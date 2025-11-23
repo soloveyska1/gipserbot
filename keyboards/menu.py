@@ -47,6 +47,12 @@ def confirm_kb():
         [InlineKeyboardButton("❌ Отмена", callback_data="home")]
     ])
 
+def points_choice_kb(points: int):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"✅ Использовать {points} баллов", callback_data="use_points_yes")],
+        [InlineKeyboardButton("❌ Нет, оплачу полностью", callback_data="use_points_no")]
+    ])
+
 def profile_kb():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📂 Мои заказы", callback_data="my_history")],

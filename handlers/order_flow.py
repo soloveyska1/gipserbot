@@ -8,7 +8,7 @@ from config import SERVICES, URGENCY_MULTIPLIER, ADMIN_IDS
 
 MSG_UPSELL = "🛡 <b>ДОПОЛНИТЕЛЬНАЯ ЗАЩИТА</b>\nХотите добавить броню к вашему заказу?"
 
-TYPE, TOPIC, DEADLINE, UPSELL, CONFIRM = range(5)
+TYPE, TOPIC, DEADLINE, UPSELL, PAY_CHOICE, CONFIRM = range(6)
 
 
 async def _safe_edit(query, text, **kwargs):
@@ -22,6 +22,38 @@ async def _safe_edit(query, text, **kwargs):
         if "not modified" in str(exc).lower():
             return msg
     return await query.message.reply_text(text, **kwargs)
+
+
+def _calc_points_offer(price: int, balance: int):
+    max_discount = int(price * 0.5)
+    points_to_spend = min(balance, max_discount)
+    final_price = max(price - points_to_spend, 0)
+    return points_to_spend, final_price
+
+
+async def _show_confirm(query, context):
+    d = context.user_data
+    srv_name = SERVICES[d['o_type']]['name']
+    urg_txt = "⚡️ СРОЧНО" if d.get('o_urgent') else "📅 Стандарт"
+    extra_txt = ", ".join(d.get('o_extras', [])) if d.get('o_extras') else "Нет"
+    original_price = d.get('original_price', d.get('o_price', 0))
+    points_used = d.get('points_used', 0)
+    final_price = d.get('final_price', original_price)
+
+    txt = (
+        f"🧾 <b>ПРЕДВАРИТЕЛЬНАЯ СМЕТА</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"📎 Услуга: {srv_name}\n"
+        f"⏳ Сроки: {urg_txt}\n"
+        f"➕ Допы: {extra_txt}\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"💰 База: {original_price} ₽\n"
+        f"💎 Списываем баллы: -{points_used}\n"
+        f"<b>ИТОГО К ОПЛАТЕ: {final_price} ₽</b>\n\n"
+        f"⚠️ <i>Нажимая «Подтвердить», вы отправляете заявку менеджеру. Оплата производится после согласования деталей.</i>"
+    )
+    await _safe_edit(query, txt, reply_markup=kb.confirm_kb(), parse_mode="HTML")
+    return CONFIRM
 
 # 1. Выбор типа
 async def start_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -140,30 +172,38 @@ async def get_upsell(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         price = int(price) # Округляем
         context.user_data['o_price'] = price
-        
-        # Формируем красивый чек
-        srv_name = SERVICES[d['o_type']]['name']
-        urg_txt = "⚡️ СРОЧНО" if d.get('o_urgent') else "📅 Стандарт"
-        
+
         # Список допов
         extras = []
         if d.get('upsell_speech'): extras.append("🎤 Речь")
         if d.get('upsell_pres'): extras.append("💻 Презентация")
         if d.get('upsell_vip'): extras.append("👑 VIP")
-        extra_txt = ", ".join(extras) if extras else "Нет"
-        
-        txt = (
-            f"🧾 <b>ПРЕДВАРИТЕЛЬНАЯ СМЕТА</b>\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"📎 Услуга: {srv_name}\n"
-            f"⏳ Сроки: {urg_txt}\n"
-            f"➕ Допы: {extra_txt}\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"💰 <b>ИТОГО К ОПЛАТЕ: {price} ₽</b>\n\n"
-            f"⚠️ <i>Нажимая «Подтвердить», вы отправляете заявку менеджеру. Оплата производится после согласования деталей.</i>"
-        )
-        await _safe_edit(query, txt, reply_markup=kb.confirm_kb(), parse_mode="HTML")
-        return CONFIRM
+        d['o_extras'] = extras
+        d['original_price'] = price
+        d['points_used'] = 0
+        d['final_price'] = price
+
+        user = await db.get_user(query.from_user.id)
+        if user and user.get('balance', 0) > 0:
+            points_to_spend, final_price = _calc_points_offer(price, user.get('balance', 0))
+            d['final_price'] = final_price
+            d['points_offer'] = points_to_spend
+            txt_points = (
+                "💰 <b>Использовать баллы?</b>\n"
+                f"Цена заказа: {price} ₽\n"
+                f"Твой баланс: {user['balance']}\n"
+                f"Можем списать: {points_to_spend} (до 50%)\n"
+                f"<b>К оплате будет: {final_price} ₽</b>"
+            )
+            await _safe_edit(
+                query,
+                txt_points,
+                reply_markup=kb.points_choice_kb(points_to_spend),
+                parse_mode="HTML",
+            )
+            return PAY_CHOICE
+
+        return await _show_confirm(query, context)
 
     # Переключение галочек (Toggle)
     if data.startswith("toggle_"):
@@ -186,41 +226,73 @@ async def get_upsell(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return UPSELL
 
+# 5b. Выбор оплаты баллами
+async def handle_payment_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    d = context.user_data
+    price = d.get('original_price', d.get('o_price', 0))
+
+    if query.data == "use_points_yes":
+        user = await db.get_user(query.from_user.id)
+        balance = user.get('balance', 0) if user else 0
+        points_to_spend, final_price = _calc_points_offer(price, balance)
+        if points_to_spend <= 0:
+            d['points_used'] = 0
+            d['final_price'] = price
+            return await _show_confirm(query, context)
+
+        await db.adjust_balance(query.from_user.id, -points_to_spend, "Оплата баллами")
+        d['points_used'] = points_to_spend
+        d['final_price'] = final_price
+    else:
+        d['points_used'] = 0
+        d['final_price'] = price
+
+    return await _show_confirm(query, context)
+
+
 # 6. Отправка
 async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user = query.from_user
     d = context.user_data
-    
+
     if query.data == "home":
         await _safe_edit(query, "❌ Отменено", reply_markup=kb.main_kb(user.id))
         return ConversationHandler.END
+
+    original_price = d.get('original_price', d.get('o_price'))
+    points_used = d.get('points_used', 0)
+    final_price = d.get('final_price', original_price)
 
     # Сохраняем в БД
     order_data = {
         'uid': user.id, 'type': d['o_type'], 'topic': d['o_topic'],
         'deadline': "Urgent" if d.get('o_urgent') else "Normal",
-        'price': d['o_price']
+        'final_price': final_price,
+        'original_price': original_price,
+        'points_used': points_used,
     }
     oid = await db.create_order(order_data)
-    
+
     # Уведомляем Админов
     adm_msg = (
         f"🚨 <b>НОВАЯ ЗАЯВКА #{oid}</b>\n"
         f"👤: <a href='tg://user?id={user.id}'>{user.full_name}</a> (@{user.username})\n"
-        f"💵: <b>{d['o_price']} ₽</b>\n"
+        f"💵: <b>{final_price} ₽</b> (база {original_price}₽, баллы -{points_used})\n"
         f"📝: {d['o_topic']}\n"
         f"⚡️: {d['o_urgent']}"
     )
     for admin_id in ADMIN_IDS:
         try: await context.bot.send_message(admin_id, adm_msg, parse_mode="HTML")
         except: pass
-    
+
     await _safe_edit(
         query,
         f"✅ <b>ЗАЯВКА #{oid} ПРИНЯТА В РАБОТУ</b>\n\n"
         f"Менеджер (Семён Юрьевич) получил уведомление. Ожидайте сообщения в ближайшее время.\n\n"
         f"<i>Совет: Пока ждете, можете скинуть ссылку другу и заработать на его заказе.</i>",
-        parse_mode="HTML"
+        parse_mode="HTML",
     )
     return ConversationHandler.END

@@ -11,6 +11,7 @@ PRICE_STATE = 1
 ALLOWED_STATUSES = {
     "checking",
     "pending_pay",
+    "paid",
     "work",
     "norm_control",
     "edits",
@@ -81,6 +82,7 @@ async def show_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_label = {
         "checking": "🟡 На проверке",
         "pending_pay": "💳 Ждёт оплаты",
+        "paid": "💸 Оплачено",
         "work": "⚙️ В работе",
         "norm_control": "🧭 Нормоконтроль",
         "edits": "✏️ Правки",
@@ -89,13 +91,21 @@ async def show_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "cancel": "❌ Отменён",
     }
 
+    original_price = order.get("original_price", order["price"])
+    points_used = order.get("points_used", 0)
+    final_price = order.get("final_price", order["price"])
+    user_link = f"<a href='tg://user?id={order['user_id']}'>{order['user_id']}</a>"
+
     txt = (
         f"📦 <b>ЗАКАЗ #{oid}</b>\n"
-        f"👤 Юзер: {order['user_id']}\n"
+        f"👤 Юзер: {user_link}\n"
         f"📚 Тип: {order['service_type']}\n"
-        f"💰 Цена: {order['price']} ₽\n"
         f"📊 Статус: {status_label.get(order['status'], order['status'])}\n"
-        f"📝 Тема: {order['topic']}\n"
+        f"📝 Тема: {order['topic']}\n\n"
+        f"💵 <b>Финансы:</b>\n"
+        f"Цена: {original_price} ₽\n"
+        f"Списано баллов: -{points_used} 💎\n"
+        f"<b>ИТОГО К ОПЛАТЕ: {final_price} ₽</b>\n"
     )
     await _safe_edit(query, txt, reply_markup=admin_kb.order_actions(oid, order['status']), parse_mode="HTML")
 
@@ -113,6 +123,21 @@ async def set_order_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("Недопустимый статус", show_alert=True)
         return
 
+    order_before = await db.get_order(oid)
+    if not order_before:
+        await query.answer("Заказ не найден", show_alert=True)
+        return
+    if status == "cancel":
+        refunded = await db.refund_points_to_user(oid)
+        if refunded:
+            try:
+                await context.bot.send_message(
+                    order_before["user_id"],
+                    f"❌ Заказ отменен. {refunded} баллов возвращены.",
+                )
+            except Exception:
+                pass
+
     await db.update_order_status(oid, status)
     order = await db.get_order(oid)
 
@@ -120,6 +145,7 @@ async def set_order_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "work": f"⚙️ <b>Ваш заказ #{oid} взят в работу!</b>\nМы начали. Ожидайте.",
         "done": f"✅ <b>Заказ #{oid} ГОТОВ!</b>\nПринимайте работу.",
         "pending_pay": f"💳 <b>По заказу #{oid} ожидается оплата.</b>",
+        "paid": f"💸 <b>Оплата по заказу #{oid} подтверждена.</b>",
         "norm_control": f"🧭 <b>Заказ #{oid} на нормоконтроле.</b>",
         "edits": f"✏️ <b>Заказ #{oid} на правках.</b>",
         "suspended": f"⏸ <b>Заказ #{oid} приостановлен.</b>",
@@ -130,6 +156,22 @@ async def set_order_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(order["user_id"], status_msg[status], parse_mode="HTML")
         except Exception:
             pass
+
+    if status == "paid":
+        user = await db.get_user(order["user_id"])
+        referrer_id = user.get("referrer_id") if user else 0
+        if referrer_id and not order.get("referral_bonus_paid"):
+            reward = int((order.get("final_price") or order.get("price", 0)) * 0.10)
+            if reward > 0:
+                await db.adjust_balance(referrer_id, reward, "Реферальный бонус")
+                await db.mark_referral_paid(oid)
+                try:
+                    await context.bot.send_message(
+                        referrer_id,
+                        f"🤝 Реферал оплатил заказ #{oid}. Тебе начислено {reward} баллов.",
+                    )
+                except Exception:
+                    pass
 
     await query.answer("Статус обновлён")
     await show_order(update, context)

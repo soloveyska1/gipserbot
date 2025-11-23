@@ -5,6 +5,7 @@ from config import DB_PATH
 ALLOWED_STATUSES = {
     "checking",
     "pending_pay",
+    "paid",
     "work",
     "norm_control",
     "edits",
@@ -75,6 +76,9 @@ def _ensure_order_columns(cursor):
         "deadline",
         "status",
         "price",
+        "original_price",
+        "points_used",
+        "final_price",
         "files",
         "speech",
         "pres",
@@ -95,6 +99,9 @@ def _ensure_order_columns(cursor):
                 deadline TEXT,
                 status TEXT DEFAULT 'checking',
                 price INTEGER DEFAULT 0,
+                original_price INTEGER DEFAULT 0,
+                points_used INTEGER DEFAULT 0,
+                final_price INTEGER DEFAULT 0,
                 files TEXT,
                 speech INTEGER DEFAULT 0,
                 pres INTEGER DEFAULT 0,
@@ -123,16 +130,19 @@ def _ensure_order_columns(cursor):
 
         select_exprs = [
             col_or_default("id", "NULL"),
-            col_or_default("user_id", "0"),
-            col_or_default("service_type", "''", fallback="order_type"),
-            col_or_default("topic", "''"),
-            col_or_default("deadline", "''"),
-            col_or_default("status", "'checking'"),
-            col_or_default("price", "0"),
-            col_or_default("files", "''"),
-            col_or_default("speech", "0"),
-            col_or_default("pres", "0"),
-            col_or_default("vip", "0"),
+                col_or_default("user_id", "0"),
+                col_or_default("service_type", "''", fallback="order_type"),
+                col_or_default("topic", "''"),
+                col_or_default("deadline", "''"),
+                col_or_default("status", "'checking'"),
+                col_or_default("price", "0"),
+                col_or_default("original_price", "price"),
+                col_or_default("points_used", "0"),
+                col_or_default("final_price", "price"),
+                col_or_default("files", "''"),
+                col_or_default("speech", "0"),
+                col_or_default("pres", "0"),
+                col_or_default("vip", "0"),
             col_or_default("is_visible", "1"),
             col_or_default("created_at", "CURRENT_TIMESTAMP"),
             col_or_default("is_hidden_for_user", "0"),
@@ -178,6 +188,9 @@ def _ensure_order_columns(cursor):
     _ensure_column(cursor, "orders", "last_ping_time", "last_ping_time TIMESTAMP")
     _ensure_column(cursor, "orders", "deadline_type", "deadline_type TEXT")
     _ensure_column(cursor, "orders", "upsell", "upsell INTEGER DEFAULT 0")
+    _ensure_column(cursor, "orders", "original_price", "original_price INTEGER DEFAULT 0")
+    _ensure_column(cursor, "orders", "points_used", "points_used INTEGER DEFAULT 0")
+    _ensure_column(cursor, "orders", "final_price", "final_price INTEGER DEFAULT 0")
 
 
 def init_db():
@@ -214,6 +227,9 @@ def init_db():
                 deadline TEXT,
                 status TEXT DEFAULT 'checking',
                 price INTEGER DEFAULT 0,
+                original_price INTEGER DEFAULT 0,
+                points_used INTEGER DEFAULT 0,
+                final_price INTEGER DEFAULT 0,
                 files TEXT,
                 speech INTEGER DEFAULT 0,
                 pres INTEGER DEFAULT 0,
@@ -339,15 +355,18 @@ async def create_order(data):
     try:
         cursor = conn.execute(
             """
-            INSERT INTO orders (user_id, service_type, topic, deadline_type, price, files, speech, pres, vip, status, deadline, promo_code)
-            VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, 'checking', ?, ?)
+            INSERT INTO orders (user_id, service_type, topic, deadline_type, price, original_price, points_used, final_price, files, speech, pres, vip, status, deadline, promo_code)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 'checking', ?, ?)
             """,
             (
                 data['uid'],
                 data['type'],
                 data['topic'],
                 data['deadline'],
-                data['price'],
+                data['final_price'],
+                data.get('original_price', data['final_price']),
+                data.get('points_used', 0),
+                data.get('final_price', data['final_price']),
                 "",
                 data.get('deadline'),
                 data.get('promo_code'),
@@ -356,7 +375,10 @@ async def create_order(data):
 
         conn.commit()
         oid = cursor.lastrowid
-        conn.execute("UPDATE users SET orders_count = orders_count + 1 WHERE user_id = ?", (data['uid'],))
+        conn.execute(
+            "UPDATE users SET orders_count = orders_count + 1, total_spent = total_spent + ? WHERE user_id = ?",
+            (data.get('final_price', 0), data['uid']),
+        )
         conn.commit()
         return oid
     finally:
@@ -467,7 +489,8 @@ async def get_order(order_id):
             """
             SELECT id, user_id, service_type, topic, deadline, status, price, files, speech, pres, vip, is_visible,
                    COALESCE(is_hidden_for_user, 0), created_at, deadline_type, COALESCE(upsell, 0),
-                   COALESCE(referral_bonus_paid, 0), promo_code, last_ping_time
+                   COALESCE(referral_bonus_paid, 0), promo_code, last_ping_time,
+                   COALESCE(original_price, price), COALESCE(points_used, 0), COALESCE(final_price, price)
             FROM orders WHERE id = ?
             """,
             (order_id,),
@@ -494,6 +517,9 @@ async def get_order(order_id):
                 "referral_bonus_paid": row[16],
                 "promo_code": row[17],
                 "last_ping_time": row[18],
+                "original_price": row[19],
+                "points_used": row[20],
+                "final_price": row[21],
             }
         return None
     finally:
@@ -507,7 +533,8 @@ async def get_user_orders(user_id):
             """
             SELECT id, user_id, service_type, topic, deadline, status, price, files, speech, pres, vip, is_visible,
                    COALESCE(is_hidden_for_user, 0), created_at, deadline_type, COALESCE(upsell, 0),
-                   COALESCE(referral_bonus_paid, 0), promo_code, last_ping_time
+                   COALESCE(referral_bonus_paid, 0), promo_code, last_ping_time,
+                   COALESCE(original_price, price), COALESCE(points_used, 0), COALESCE(final_price, price)
             FROM orders
             WHERE user_id = ? AND is_visible = 1 AND COALESCE(is_hidden_for_user, 0) = 0
             ORDER BY id DESC
@@ -525,6 +552,9 @@ async def get_user_orders(user_id):
                     "topic": row[3],
                     "deadline": row[4],
                     "promo_code": row[17],
+                    "original_price": row[19],
+                    "points_used": row[20],
+                    "final_price": row[21],
                 }
             )
         return orders
@@ -537,7 +567,8 @@ async def get_all_orders(limit=100):
     try:
         cursor = conn.execute(
             """
-            SELECT id, user_id, service_type, topic, deadline, status, price, promo_code
+            SELECT id, user_id, service_type, topic, deadline, status, price, promo_code,
+                   COALESCE(original_price, price), COALESCE(points_used, 0), COALESCE(final_price, price)
             FROM orders WHERE status != 'done' ORDER BY id DESC LIMIT ?
             """,
             (limit,),
@@ -553,6 +584,9 @@ async def get_all_orders(limit=100):
                     "service_type": row[2],
                     "topic": row[3],
                     "promo_code": row[7],
+                    "original_price": row[8],
+                    "points_used": row[9],
+                    "final_price": row[10],
                 }
             )
         return orders
@@ -592,7 +626,53 @@ async def hide_order_for_user(order_id, hide=True):
 async def update_order_price(order_id, price):
     conn = await get_connection()
     try:
-        conn.execute("UPDATE orders SET price = ? WHERE id = ?", (price, order_id))
+        cursor = conn.execute(
+            "SELECT COALESCE(points_used, 0) FROM orders WHERE id = ?",
+            (order_id,),
+        )
+        row = cursor.fetchone()
+        points_used = row[0] if row else 0
+        final_price = max(price - points_used, 0)
+        conn.execute(
+            "UPDATE orders SET price = ?, original_price = ?, final_price = ?, points_used = ? WHERE id = ?",
+            (final_price, price, final_price, points_used, order_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+async def refund_points_to_user(order_id):
+    conn = await get_connection()
+    try:
+        cursor = conn.execute(
+            "SELECT user_id, COALESCE(points_used, 0), COALESCE(original_price, price) FROM orders WHERE id = ?",
+            (order_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return 0
+        user_id, points_used, original_price = row
+        if points_used > 0:
+            conn.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (points_used, user_id))
+            conn.execute(
+                "UPDATE orders SET points_used = 0, final_price = ?, price = ? WHERE id = ?",
+                (original_price, original_price, order_id),
+            )
+            conn.commit()
+            return points_used
+        return 0
+    finally:
+        conn.close()
+
+
+async def mark_referral_paid(order_id):
+    conn = await get_connection()
+    try:
+        conn.execute(
+            "UPDATE orders SET referral_bonus_paid = 1 WHERE id = ?",
+            (order_id,),
+        )
         conn.commit()
     finally:
         conn.close()

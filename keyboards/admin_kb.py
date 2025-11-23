@@ -21,6 +21,7 @@ def orders_list(orders, page: int = 0):
     status_emoji = {
         "checking": "🟡",
         "pending_pay": "💳",
+        "paid": "💸",
         "work": "⚙️",
         "norm_control": "🧭",
         "edits": "✏️",
@@ -33,7 +34,7 @@ def orders_list(orders, page: int = 0):
         kb.append(
             [
                 InlineKeyboardButton(
-                    f"{status_emoji.get(o['status'], '?')} #{o['id']} | {o['price']}₽",
+                    f"{status_emoji.get(o['status'], '?')} #{o['id']} | {o.get('final_price', o['price'])}₽",
                     callback_data=f"admin_order_{o['id']}",
                 )
             ]
@@ -55,18 +56,21 @@ def order_actions(oid: int, status: str):
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("💬 Чат заказа", callback_data=f"adm_chat_{oid}")],
-            [
-                InlineKeyboardButton("⚙️ В работу", callback_data=f"admin_set_status_{oid}_work"),
-                InlineKeyboardButton("✅ Выполнен", callback_data=f"admin_set_status_{oid}_done"),
-            ],
-            [
-                InlineKeyboardButton("💳 Ждёт оплаты", callback_data=f"admin_set_status_{oid}_pending_pay"),
-                InlineKeyboardButton("❌ Отменить", callback_data=f"admin_set_status_{oid}_cancel"),
-            ],
-            [
-                InlineKeyboardButton("🧭 Нормконтроль", callback_data=f"admin_set_status_{oid}_norm_control"),
-                InlineKeyboardButton("✏️ Правки", callback_data=f"admin_set_status_{oid}_edits"),
-            ],
+        [
+            InlineKeyboardButton("⚙️ В работу", callback_data=f"admin_set_status_{oid}_work"),
+            InlineKeyboardButton("✅ Выполнен", callback_data=f"admin_set_status_{oid}_done"),
+        ],
+        [
+            InlineKeyboardButton("💳 Ждёт оплаты", callback_data=f"admin_set_status_{oid}_pending_pay"),
+            InlineKeyboardButton("💸 Оплачен", callback_data=f"admin_set_status_{oid}_paid"),
+        ],
+        [
+            InlineKeyboardButton("❌ Отменить", callback_data=f"admin_set_status_{oid}_cancel"),
+        ],
+        [
+            InlineKeyboardButton("🧭 Нормконтроль", callback_data=f"admin_set_status_{oid}_norm_control"),
+            InlineKeyboardButton("✏️ Правки", callback_data=f"admin_set_status_{oid}_edits"),
+        ],
             [InlineKeyboardButton("⏸ Приостановить", callback_data=f"admin_set_status_{oid}_suspended")],
             [InlineKeyboardButton("⬅️ Назад к списку", callback_data="admin_orders")],
         ]
