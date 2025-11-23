@@ -38,12 +38,12 @@ def _ensure_user_columns(cursor):
     _ensure_column(cursor, "users", "referrer_id", "referrer_id INTEGER DEFAULT 0")
     _ensure_column(cursor, "users", "is_alive", "is_alive INTEGER DEFAULT 1")
     _ensure_column(cursor, "users", "agreed_to_rules", "agreed_to_rules INTEGER DEFAULT 0")
-    _ensure_column(
-        cursor,
-        "users",
-        "joined_at",
-        "joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
-    )
+    if not _column_exists(cursor, "users", "joined_at"):
+        # SQLite не позволяет добавлять колонку с выражением по умолчанию через ALTER,
+        # поэтому добавляем без дефолта и заполняем существующие записи вручную.
+        cursor.execute("ALTER TABLE users ADD COLUMN joined_at TIMESTAMP")
+        cursor.execute("UPDATE users SET joined_at = CURRENT_TIMESTAMP WHERE joined_at IS NULL")
+        logging.info("[DB] Добавлен столбец joined_at в users и заполнен текущей датой")
 
 
 def init_db():
