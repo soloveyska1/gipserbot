@@ -229,7 +229,47 @@ async def show_price_list(update: types.Update, context: Any):
     allowed = await _ensure_rules(update, context)
     if not allowed:
         return ConversationHandler.END
-    return await _render_price_menu(update, context, via_callback=True)
+
+    services = await catalog_db.get_all_services()
+    text = "📜 <b>Прейскурант Салуна</b>\nНиже наши расценки, партнер."
+
+    if not services:
+        empty_text = "⚠️ Технический перерыв: список услуг пуст. Сообщите шерифу."
+        if query.message and query.message.photo:
+            await query.message.delete()
+            return await query.message.answer(
+                text=empty_text, reply_markup=kb.back_kb("home"), parse_mode="HTML"
+            )
+        try:
+            return await query.message.edit_text(
+                text=empty_text, reply_markup=kb.back_kb("home"), parse_mode="HTML"
+            )
+        except Exception:
+            return await query.message.answer(
+                text=empty_text, reply_markup=kb.back_kb("home"), parse_mode="HTML"
+            )
+
+    markup = builders.create_dynamic_service_keyboard(
+        services,
+        prefix="price_srv_",
+        back_cb="price_list",
+        back_text="🔙 Назад к ценам",
+    )
+
+    if query.message and query.message.photo:
+        await query.message.delete()
+        return await query.message.answer(
+            text=text, reply_markup=markup, parse_mode="HTML"
+        )
+
+    try:
+        return await query.message.edit_text(
+            text=text, reply_markup=markup, parse_mode="HTML"
+        )
+    except Exception:
+        return await query.message.answer(
+            text=text, reply_markup=markup, parse_mode="HTML"
+        )
 
 
 async def show_price_list_text(update: types.Update, context: Any):
