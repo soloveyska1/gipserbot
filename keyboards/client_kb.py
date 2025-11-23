@@ -10,7 +10,7 @@ def main_kb(user_id):
             [InlineKeyboardButton("🔥 СДЕЛАТЬ ЗАКАЗ", callback_data="order_start")],
             [InlineKeyboardButton("👤 Личный кабинет", callback_data="profile"), InlineKeyboardButton("💬 Оставить отзыв", callback_data="write_review")],
             [InlineKeyboardButton("🕸 Партнерка (15%)", callback_data="partners"), InlineKeyboardButton("👨‍💻 Саппорт", url=f"tg://user?id={ADMIN_IDS[0]}")],
-            [InlineKeyboardButton("👀 Читать отзывы", url="https://t.me/c/178428445/1")],
+            [InlineKeyboardButton("👀 Читать отзывы", url="https://t.me/+Cls1cEPgPcMyZDJi")],
         ]
     )
 

@@ -103,11 +103,11 @@ def _rank_by_spent(total_spent: int) -> str:
 
 
 async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state = _StateWrapper(context)
+    await state.clear()
     query = update.callback_query
     if query:
         await query.answer()
-    state = _StateWrapper(context)
-    await state.clear()
     if query:
         await _safe_edit(query, "💀 <b>GOD MODE ACTIVATED</b>", reply_markup=admin_kb.main_menu(), parse_mode="HTML")
     return ConversationHandler.END
@@ -232,14 +232,16 @@ async def save_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text or ""
     await crm_db.update_admin_note(target, text)
     await update.message.reply_text("✅ Заметка сохранена")
+    state = _StateWrapper(context)
+    await state.clear()
     await show_client_profile(update, context, user_id=target, page=page)
     return ConversationHandler.END
 
 
 async def cancel_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    cb = _parse_user_callback(update)
     state = _StateWrapper(context)
     await state.clear()
+    cb = _parse_user_callback(update)
     if cb:
         await show_client_profile(update, context, user_id=cb.id, page=cb.page)
     return ConversationHandler.END
@@ -295,9 +297,9 @@ async def send_dm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cancel_dm(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    cb = _parse_user_callback(update)
     state = _StateWrapper(context)
     await state.clear()
+    cb = _parse_user_callback(update)
     if cb:
         await show_client_profile(update, context, user_id=cb.id, page=cb.page)
     return ConversationHandler.END
@@ -345,9 +347,9 @@ async def save_points_change(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def cancel_points_change(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    cb = _parse_user_callback(update)
     state = _StateWrapper(context)
     await state.clear()
+    cb = _parse_user_callback(update)
     if cb:
         await show_client_profile(update, context, user_id=cb.id, page=cb.page)
     return ConversationHandler.END

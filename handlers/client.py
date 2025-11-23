@@ -242,11 +242,11 @@ async def ask_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cancel_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state = _StateWrapper(context)
+    await state.clear()
     query = update.callback_query
     if query:
         await query.answer()
-    state = _StateWrapper(context)
-    await state.clear()
     await start(update, context)
     return ConversationHandler.END
 
