@@ -3,6 +3,7 @@ from telegram import Update
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes, ConversationHandler
 from database import core as db
+from database import db as catalog_db
 from keyboards import client_kb as kb
 from config import REVIEW_CHANNEL_ID
 import utils  # Подключаем твои новые утилиты
@@ -14,12 +15,17 @@ WELCOME_PHOTO_ID = "AgACAgIAAxkBAAIRBGkf3jybt7UiWBtsS4itzUfhWvceAALIC2sb7NgAAUkg
 REVIEW_STATE = 1
 
 CODE_OF_HONOR = (
-    "📜 <b>КОДЕКС ЧЕСТИ САЛУНА</b>\n"
-    "1. <b>Правки:</b> 3 пакета правок включены в цену (до сдачи научнику). Остальное — за доплату. Срок давности — 6 месяцев.\n"
-    "2. <b>Возврат:</b> Возврат только если работа НЕ написана. Оценка на защите зависит от тебя. Претензии «Я получил 4, а хотел 5» не принимаются.\n"
-    "3. <b>Антиплагиат:</b> Мы НЕ загружаем работу в вузовские системы (чтобы не было «дубля»). Если процент низкий — пришли PDF-отчет, перепишем бесплатно.\n"
-    "4. <b>Сроки:</b> В сезон Шериф может отвечать не сразу. Не паникуй.\n"
-    "5. <b>Анонимность:</b> Всё строго между нами."
+    "⚖️ <b>КОДЕКС ЧЕСТИ САЛУНА</b>\n\n"
+    "1. <b>Репутация на Диком Западе.</b>\n"
+    "Нам доверяют уже более <b>1000 партнеров</b>. Мы в этом городе надолго, и наше слово крепче виски.\n\n"
+    "2. <b>Три полных обоймы (Правки).</b>\n"
+    "В стоимость включено <b>3 пакета бесплатных правок</b>. Обычно этого хватает, чтобы уложить любого препода наповал. Если потребуется больше — обсудим по-джентльменски.\n\n"
+    "3. <b>Твоя безопасность (Антиплагиат).</b>\n"
+    "Мы <b>НЕ</b> загружаем твою работу в системы проверки (Антиплагиат.ру и др.).\n"
+    "<i>Почему?</i> Чтобы не подставить тебя. Если мы проверим её раньше времени, система поставит метку 'Дубликат', и ты не пройдешь проверку в ВУЗе.\n"
+    "Твой 'ствол' должен выстрелить только один раз — на защите.\n\n"
+    "4. <b>Анонимность.</b>\n"
+    "Никто не узнает, что мы вели дела. Тайна переписки охраняется законом прерий."
 )
 
 
@@ -148,6 +154,15 @@ async def accept_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML",
     )
 
+
+def _get_rank(total_spent: int) -> str:
+    if total_spent >= 20000:
+        return "📚 Власть Академии"
+    if total_spent >= 5000:
+        return "🎓 Профи"
+    return "🤠 Новичок"
+
+
 async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -155,17 +170,42 @@ async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     allowed = await _ensure_rules(update, context)
     if not allowed:
         return ConversationHandler.END
-    
+
     u = await db.get_user(query.from_user.id)
     if not u: return await start(update, context)
-    
+
+    rank = _get_rank(u.get("total_spent", 0) or 0)
+
     txt = (
         f"👤 <b>ЛИЧНОЕ ДЕЛО</b>\n"
         f"🆔 ID: <code>{u['user_id']}</code>\n"
         f"💰 Баланс: <b>{u['balance']} ₽</b>\n"
-        f"💸 Инвестировано в спокойствие: {u['total_spent']} ₽"
+        f"💸 Инвестировано в спокойствие: {u['total_spent']} ₽\n"
+        f"🏆 Ранг: {rank}"
     )
     await _safe_edit(query, txt, reply_markup=kb.profile_kb(), parse_mode="HTML")
+
+
+async def show_price_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    allowed = await _ensure_rules(update, context)
+    if not allowed:
+        return ConversationHandler.END
+
+    services = await catalog_db.get_all_services()
+    if not services:
+        return await _safe_edit(
+            query,
+            "⚠️ Технический перерыв: список услуг пуст. Сообщите шерифу.",
+            reply_markup=kb.back_kb("home"),
+        )
+
+    lines = ["📜 <b>МЕНЮ САЛУНА</b>"]
+    for srv in services:
+        lines.append(f"• {srv.get('name')} — {srv.get('price', 0)} ₽")
+
+    await _safe_edit(query, "\n".join(lines), reply_markup=kb.back_kb("home"), parse_mode="HTML")
 
 async def partners(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -227,6 +267,15 @@ async def my_transactions(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sign = "+" if t['amount'] > 0 else ""
         txt += f"📅 {t['date'][:16]}\n💴 <b>{sign}{t['amount']} ₽</b> ({t['reason']})\n\n"
     await _safe_edit(query, txt, reply_markup=kb.back_kb("profile"), parse_mode="HTML")
+
+
+async def show_code_of_honor(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    allowed = await _ensure_rules(update, context)
+    if not allowed:
+        return ConversationHandler.END
+    await _safe_edit(query, CODE_OF_HONOR, reply_markup=kb.back_kb("home"), parse_mode="HTML")
 
 # --- ОТЗЫВЫ ---
 async def ask_review(update: Update, context: ContextTypes.DEFAULT_TYPE):

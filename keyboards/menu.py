@@ -6,9 +6,9 @@ from config import SERVICES, ADMIN_IDS
 def main_kb(user_id):
     kb = [
         [InlineKeyboardButton("🔥 СДЕЛАТЬ ЗАКАЗ", callback_data="order_start")],
-        [InlineKeyboardButton("👤 Личный кабинет", callback_data="profile"), InlineKeyboardButton("💬 Оставить отзыв", callback_data="write_review")],
-        [InlineKeyboardButton("🕸 Партнерка (15%)", callback_data="partners"), InlineKeyboardButton("👨‍💻 Саппорт", url=f"tg://user?id={ADMIN_IDS[0]}")],
-        [InlineKeyboardButton("👀 Читать отзывы", url="https://t.me/+Cls1cEPgPcMyZDJi")]
+        [InlineKeyboardButton("📜 Меню (Цены)", callback_data="price_list"), InlineKeyboardButton("🤠 Мое Досье", callback_data="profile")],
+        [InlineKeyboardButton("⚖️ Кодекс Чести (Гарантии)", callback_data="code_honor"), InlineKeyboardButton("👀 Слухи (Отзывы)", url="https://t.me/+Cls1cEPgPcMyZDJi")],
+        [InlineKeyboardButton("⭐ Позвать Шерифа (Саппорт)", url=f"tg://user?id={ADMIN_IDS[0]}")]
     ]
     return InlineKeyboardMarkup(kb)
 
@@ -55,9 +55,10 @@ def points_choice_kb(points: int):
 
 def profile_kb():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📂 Мои заказы", callback_data="my_history")],
-        [InlineKeyboardButton("💰 Транзакции", callback_data="my_transactions")],
-        [InlineKeyboardButton("🔙 В меню", callback_data="home")]
+        [InlineKeyboardButton("📦 Мои заказы", callback_data="my_history")],
+        [InlineKeyboardButton("💰 Партнерка (15%)", callback_data="partners")],
+        [InlineKeyboardButton("✍️ Написать отзыв", callback_data="write_review")],
+        [InlineKeyboardButton("🔙 В главное меню", callback_data="home")]
     ])
 
 def history_kb(orders):
