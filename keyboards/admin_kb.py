@@ -83,6 +83,7 @@ class StatsCallback:
 def main_menu():
     return InlineKeyboardMarkup(
         [
+            [InlineKeyboardButton("👥 Клиенты", callback_data=UserCallback(action="list", id=0, page=0).pack())],
             [InlineKeyboardButton("📦 Заказы", callback_data=OrderCallback(action="list", id=0).pack())],
             [InlineKeyboardButton("⚙️ Прайс", callback_data="admin_prices")],
             [InlineKeyboardButton("📢 Рассылка", callback_data="admin_broadcast")],

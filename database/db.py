@@ -76,6 +76,25 @@ async def get_all_users_paginated(page: int, page_size: int = 10) -> List[Dict[s
     return [dict(row) for row in rows]
 
 
+async def get_user_admin_profile(user_id: int) -> Dict[str, Any] | None:
+    """Return a single user with admin-only fields (note, ban, totals)."""
+    _ensure_user_columns()
+    conn = _get_conn()
+    conn.row_factory = sqlite3.Row
+    cur = conn.execute(
+        """
+        SELECT user_id, username, full_name, balance, is_banned, admin_note, total_spent,
+               orders_count, joined_at, referrer_id
+        FROM users
+        WHERE user_id = ?
+        """,
+        (user_id,),
+    )
+    row = cur.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
 async def update_admin_note(user_id: int, text: str) -> None:
     _ensure_user_columns()
     conn = _get_conn()

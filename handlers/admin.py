@@ -1,15 +1,20 @@
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes, ConversationHandler, MessageHandler, CallbackQueryHandler, CommandHandler, filters
 
 from config import ADMIN_IDS, SERVICES
 from database import core as db
+from database import db as crm_db
 from database import pricing
 from keyboards import admin_kb
-from keyboards.admin_kb import OrderCallback
+from keyboards.admin_kb import OrderCallback, UserCallback
 
 PRICE_STATE = 1
 BALANCE_STATE = 2
+NOTE_STATE = 3
+DM_STATE = 4
+USER_REPLY_STATE = 5
+CLIENT_BALANCE_STATE = 6
 ALLOWED_STATUSES = {
     "checking",
     "pending_pay",
@@ -53,11 +58,316 @@ def _parse_order_callback(update: Update) -> OrderCallback | None:
     return OrderCallback.parse(query.data)
 
 
+def _parse_user_callback(update: Update) -> UserCallback | None:
+    query = update.callback_query
+    if not query or not query.data:
+        return None
+    return UserCallback.parse(query.data)
+
+
+def _rank_by_spent(total_spent: int) -> str:
+    if total_spent >= 20000:
+        return "VIP"
+    if total_spent >= 5000:
+        return "Pro"
+    return "Novice"
+
+
 async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if query:
         await query.answer()
         await _safe_edit(query, "💀 <b>GOD MODE ACTIVATED</b>", reply_markup=admin_kb.main_menu(), parse_mode="HTML")
+
+
+# --- CLIENTS CRM ---
+async def show_clients(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int = 0):
+    if not _is_admin(update.effective_user.id):
+        return
+    query = update.callback_query
+    if query:
+        await query.answer()
+
+    users = await crm_db.get_all_users_paginated(page)
+    start_index = page * 10 + 1
+    lines = ["👥 <b>КЛИЕНТЫ</b>"]
+    if not users:
+        lines.append("Пользователей пока нет")
+    else:
+        for idx, user in enumerate(users, start=start_index):
+            uname = f"@{user['username']}" if user.get("username") else "—"
+            fullname = user.get("full_name") or "Без имени"
+            balance = user.get("balance", 0)
+            lines.append(f"{idx}. {fullname} ({uname}) | {balance} 💎")
+
+    text = "\n".join(lines)
+    markup = admin_kb.get_users_list_kb(users, page)
+    if query:
+        await _safe_edit(query, text, reply_markup=markup, parse_mode="HTML")
+    else:
+        await update.message.reply_text(text, reply_markup=markup, parse_mode="HTML")
+
+
+async def show_client_profile(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int | None = None, page: int = 0):
+    cb = _parse_user_callback(update)
+    target_id = user_id if user_id is not None else (cb.id if cb else None)
+    if target_id is None:
+        return
+    if not _is_admin(update.effective_user.id):
+        return
+
+    query = update.callback_query
+    if query:
+        await query.answer()
+
+    user = await crm_db.get_user_admin_profile(target_id)
+    if not user:
+        if query:
+            await query.answer("Пользователь не найден", show_alert=True)
+        else:
+            await update.message.reply_text("Пользователь не найден")
+        return
+
+    uname = f"@{user['username']}" if user.get("username") else "—"
+    link = f"<a href='tg://user?id={user['user_id']}'>{user.get('full_name') or user['user_id']}</a>"
+    rank = _rank_by_spent(user.get("total_spent", 0))
+    note = user.get("admin_note") or "—"
+    text = (
+        f"👤 Пользователь: {link} ({uname})\n"
+        f"🆔 ID: {user['user_id']}\n"
+        f"📅 Дата регистрации: {user.get('joined_at') or '—'}\n"
+        f"🤝 Пригласил: {user.get('referrer_id') or '—'}\n"
+        f"💰 Баланс: {user.get('balance', 0)} 💎\n"
+        f"📦 Заказы: {user.get('orders_count', 0)} (Сумма: {user.get('total_spent', 0)} ₽)\n"
+        f"🏆 Ранг: {rank}\n"
+        f"📝 Заметка: {note}"
+    )
+
+    markup = admin_kb.get_user_profile_kb(user_id=target_id, is_banned=bool(user.get("is_banned")), page=cb.page if cb else page)
+    if query:
+        await _safe_edit(query, text, reply_markup=markup, parse_mode="HTML")
+    else:
+        await update.message.reply_text(text, reply_markup=markup, parse_mode="HTML")
+
+
+async def toggle_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cb = _parse_user_callback(update)
+    if not cb:
+        return
+    if not _is_admin(update.effective_user.id):
+        return
+    query = update.callback_query
+    if query:
+        await query.answer()
+
+    user = await crm_db.get_user_admin_profile(cb.id)
+    if not user:
+        if query:
+            await query.answer("Не найден", show_alert=True)
+        return
+    new_status = not bool(user.get("is_banned"))
+    await crm_db.set_ban_status(cb.id, new_status)
+    await show_client_profile(update, context, user_id=cb.id, page=cb.page)
+
+
+async def start_note_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cb = _parse_user_callback(update)
+    if not cb or not _is_admin(update.effective_user.id):
+        return ConversationHandler.END
+    query = update.callback_query
+    if query:
+        await query.answer()
+    context.user_data["note_user"] = cb.id
+    context.user_data["note_page"] = cb.page
+    cancel_cb = UserCallback(action="view", id=cb.id, page=cb.page).pack()
+    await _safe_edit(
+        query,
+        "📝 Введите новую заметку:",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data=cancel_cb)]]),
+    )
+    return NOTE_STATE
+
+
+async def save_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update.effective_user.id):
+        return ConversationHandler.END
+    target = context.user_data.get("note_user")
+    page = context.user_data.get("note_page", 0)
+    if not target:
+        await update.message.reply_text("❌ Нет выбранного пользователя")
+        return ConversationHandler.END
+    text = update.message.text or ""
+    await crm_db.update_admin_note(target, text)
+    await update.message.reply_text("✅ Заметка сохранена")
+    await show_client_profile(update, context, user_id=target, page=page)
+    return ConversationHandler.END
+
+
+async def cancel_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cb = _parse_user_callback(update)
+    if cb:
+        await show_client_profile(update, context, user_id=cb.id, page=cb.page)
+    return ConversationHandler.END
+
+
+async def start_dm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cb = _parse_user_callback(update)
+    if not cb or not _is_admin(update.effective_user.id):
+        return ConversationHandler.END
+    query = update.callback_query
+    if query:
+        await query.answer()
+    context.user_data["dm_user"] = cb.id
+    context.user_data["dm_page"] = cb.page
+    cancel_cb = UserCallback(action="view", id=cb.id, page=cb.page).pack()
+    await _safe_edit(
+        query,
+        "✉️ Введите текст для отправки пользователю:",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data=cancel_cb)]]),
+    )
+    return DM_STATE
+
+
+async def send_dm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update.effective_user.id):
+        return ConversationHandler.END
+    target = context.user_data.get("dm_user")
+    page = context.user_data.get("dm_page", 0)
+    if not target:
+        await update.message.reply_text("❌ Нет выбранного пользователя")
+        return ConversationHandler.END
+    text = update.message.text or ""
+    reply_btn = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "↩️ Ответить",
+                    callback_data=UserCallback(action="reply", id=update.effective_user.id, page=0).pack(),
+                )
+            ]
+        ]
+    )
+    try:
+        await context.bot.send_message(target, f"✉️ Сообщение от Шерифа:\n{text}", reply_markup=reply_btn)
+    except Exception:
+        await update.message.reply_text("⚠️ Не удалось доставить сообщение")
+    else:
+        await update.message.reply_text("✅ Отправлено")
+    await show_client_profile(update, context, user_id=target, page=page)
+    return ConversationHandler.END
+
+
+async def cancel_dm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cb = _parse_user_callback(update)
+    if cb:
+        await show_client_profile(update, context, user_id=cb.id, page=cb.page)
+    return ConversationHandler.END
+
+
+async def start_points_change(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cb = _parse_user_callback(update)
+    if not cb or cb.action not in {"points_add", "points_sub"} or not _is_admin(update.effective_user.id):
+        return ConversationHandler.END
+    query = update.callback_query
+    if query:
+        await query.answer()
+    context.user_data["client_balance_target"] = cb.id
+    context.user_data["client_balance_page"] = cb.page
+    context.user_data["client_balance_dir"] = "add" if cb.action == "points_add" else "sub"
+    cancel_cb = UserCallback(action="view", id=cb.id, page=cb.page).pack()
+    prompt = "💎 Введите количество баллов для начисления:" if cb.action == "points_add" else "💎 Введите количество баллов для списания:"
+    await _safe_edit(
+        query,
+        prompt,
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data=cancel_cb)]]),
+    )
+    return CLIENT_BALANCE_STATE
+
+
+async def save_points_change(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update.effective_user.id):
+        return ConversationHandler.END
+    target = context.user_data.get("client_balance_target")
+    page = context.user_data.get("client_balance_page", 0)
+    direction = context.user_data.get("client_balance_dir")
+    if not target or direction not in {"add", "sub"}:
+        await update.message.reply_text("❌ Нет выбранного пользователя")
+        return ConversationHandler.END
+    try:
+        amount = int(update.message.text)
+    except ValueError:
+        await update.message.reply_text("❌ Введите число")
+        return CLIENT_BALANCE_STATE
+    delta = amount if direction == "add" else -amount
+    await db.adjust_balance(target, delta, "Админ коррекция")
+    await update.message.reply_text(f"✅ Баланс изменён на {delta}")
+    await show_client_profile(update, context, user_id=target, page=page)
+    return ConversationHandler.END
+
+
+async def cancel_points_change(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cb = _parse_user_callback(update)
+    if cb:
+        await show_client_profile(update, context, user_id=cb.id, page=cb.page)
+    return ConversationHandler.END
+
+
+async def show_user_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cb = _parse_user_callback(update)
+    if not cb or not _is_admin(update.effective_user.id):
+        return
+    query = update.callback_query
+    if query:
+        await query.answer()
+    orders = await db.get_user_orders(cb.id)
+    status_label = {
+        "checking": "🟡 На проверке",
+        "pending_pay": "💳 Ждёт оплаты",
+        "paid": "💸 Оплачено",
+        "work": "⚙️ В работе",
+        "norm_control": "🧭 Нормоконтроль",
+        "edits": "✏️ Правки",
+        "suspended": "⏸ Приостановлен",
+        "done": "✅ Выполнен",
+        "cancel": "❌ Отменён",
+    }
+    lines = ["📦 Заказы пользователя"]
+    if not orders:
+        lines.append("Нет заказов")
+    else:
+        for o in orders:
+            lines.append(f"#{o['id']}: {status_label.get(o['status'], o['status'])} — {o.get('final_price', o['price'])}₽")
+    back_cb = UserCallback(action="view", id=cb.id, page=cb.page).pack()
+    markup = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data=back_cb)]])
+    await _safe_edit(query, "\n".join(lines), reply_markup=markup, parse_mode="HTML")
+
+
+async def start_user_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cb = _parse_user_callback(update)
+    if not cb or cb.action != "reply":
+        return ConversationHandler.END
+    query = update.callback_query
+    if query:
+        await query.answer()
+    context.user_data["reply_admin"] = cb.id
+    await _safe_edit(query, "✍️ Напишите ответ Шерифу:")
+    return USER_REPLY_STATE
+
+
+async def send_user_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    admin_id = context.user_data.get("reply_admin")
+    if not admin_id:
+        await update.message.reply_text("❌ Админ не найден")
+        return ConversationHandler.END
+    text = update.message.text or ""
+    user = update.effective_user
+    link = f"<a href='tg://user?id={user.id}'>{user.full_name or user.id}</a>"
+    try:
+        await context.bot.send_message(admin_id, f"↩️ Ответ от {link}:\n{text}", parse_mode="HTML")
+    except Exception:
+        pass
+    await update.message.reply_text("✅ Отправлено Шерифу")
+    return ConversationHandler.END
 
 
 # --- ORDERS ---
@@ -413,6 +723,66 @@ def setup(app):
     app.add_handler(balance_conv)
 
     app.add_handler(CallbackQueryHandler(order_callback_router, pattern=r"^ord:(list|view|status|user|give|take):"))
+
+    # CRM clients
+    app.add_handler(CallbackQueryHandler(show_clients, pattern=r"^usr:list:"))
+    app.add_handler(CallbackQueryHandler(show_client_profile, pattern=r"^usr:view:"))
+    app.add_handler(CallbackQueryHandler(toggle_ban, pattern=r"^usr:ban:"))
+    app.add_handler(CallbackQueryHandler(start_note_edit, pattern=r"^usr:note:"))
+    app.add_handler(CallbackQueryHandler(start_dm, pattern=r"^usr:msg:"))
+    app.add_handler(CallbackQueryHandler(show_user_orders, pattern=r"^usr:orders:"))
+    app.add_handler(CallbackQueryHandler(start_points_change, pattern=r"^usr:points_(add|sub):"))
+
+    note_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(start_note_edit, pattern=r"^usr:note:")],
+        states={
+            NOTE_STATE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, save_note),
+                CallbackQueryHandler(cancel_note, pattern=r"^usr:view:"),
+            ]
+        },
+        fallbacks=[CallbackQueryHandler(cancel_note, pattern=r"^usr:view:")],
+        per_message=False,
+    )
+    app.add_handler(note_conv)
+
+    dm_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(start_dm, pattern=r"^usr:msg:")],
+        states={
+            DM_STATE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, send_dm),
+                CallbackQueryHandler(cancel_dm, pattern=r"^usr:view:"),
+            ]
+        },
+        fallbacks=[CallbackQueryHandler(cancel_dm, pattern=r"^usr:view:")],
+        per_message=False,
+    )
+    app.add_handler(dm_conv)
+
+    points_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(start_points_change, pattern=r"^usr:points_(add|sub):")],
+        states={
+            CLIENT_BALANCE_STATE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, save_points_change),
+                CallbackQueryHandler(cancel_points_change, pattern=r"^usr:view:"),
+            ]
+        },
+        fallbacks=[CallbackQueryHandler(cancel_points_change, pattern=r"^usr:view:")],
+        per_message=False,
+    )
+    app.add_handler(points_conv)
+
+    user_reply_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(start_user_reply, pattern=r"^usr:reply:")],
+        states={
+            USER_REPLY_STATE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, send_user_reply),
+            ]
+        },
+        fallbacks=[],
+        per_message=False,
+    )
+    app.add_handler(user_reply_conv)
 
     app.add_handler(CallbackQueryHandler(show_stats, pattern="^admin_stats$"))
     app.add_handler(CallbackQueryHandler(broadcast_placeholder, pattern="^admin_broadcast$"))
