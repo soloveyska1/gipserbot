@@ -170,7 +170,12 @@ async def my_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     oid = int(query.data.split("_")[-1])
     o = await db.get_order(oid)
-    status_map = {"checking": "🟡 На проверке", "work": ⚙️ В работе", "done": "✅ Готов", "cancel": "❌ Отмена"}
+    status_map = {
+        "checking": "🟡 На проверке",
+        "work": "⚙️ В работе",
+        "done": "✅ Готов",
+        "cancel": "❌ Отмена",
+    }
     txt = (
         f"📦 <b>ЗАКАЗ #{o['id']}</b>\n"
         f"📚 Тип: {o['service_type']}\n"
