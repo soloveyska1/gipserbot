@@ -1,5 +1,5 @@
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from config import SERVICES, ADMIN_IDS
+from config import ADMIN_IDS
 
 # Клиентские клавиатуры вынесены отдельно, чтобы избежать конфликтов с админской частью
 
@@ -17,14 +17,6 @@ def main_kb(user_id):
             InlineKeyboardButton("⭐ Позвать Шерифа (Саппорт)", url=f"tg://user?id={ADMIN_IDS[0]}")],
     ]
     return InlineKeyboardMarkup(keyboard)
-
-
-def services_kb():
-    kb = []
-    for k, v in SERVICES.items():
-        kb.append([InlineKeyboardButton(f"{v['emoji']} {v['name']}", callback_data=f"srv_{k}")])
-    kb.append([InlineKeyboardButton("🔙 В меню", callback_data="home")])
-    return InlineKeyboardMarkup(kb)
 
 
 def deadline_kb():
