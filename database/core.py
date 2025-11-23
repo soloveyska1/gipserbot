@@ -154,6 +154,11 @@ def init_db():
             """
         )
 
+        _ensure_column(cursor, "users", "balance", "balance INTEGER DEFAULT 0")
+        _ensure_column(cursor, "users", "total_spent", "total_spent INTEGER DEFAULT 0")
+        _ensure_column(cursor, "users", "orders_count", "orders_count INTEGER DEFAULT 0")
+        _ensure_column(cursor, "users", "is_banned", "is_banned INTEGER DEFAULT 0")
+        _ensure_column(cursor, "users", "referrer_id", "referrer_id INTEGER DEFAULT 0")
         _ensure_column(cursor, "users", "is_alive", "is_alive INTEGER DEFAULT 1")
         _ensure_column(cursor, "users", "agreed_to_rules", "agreed_to_rules INTEGER DEFAULT 0")
 
