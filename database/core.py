@@ -30,6 +30,16 @@ def _ensure_column(cursor, table, column, definition):
         logging.info("[DB] Добавлен столбец %s в %s", column, table)
 
 
+def _ensure_user_columns(cursor):
+    _ensure_column(cursor, "users", "balance", "balance INTEGER DEFAULT 0")
+    _ensure_column(cursor, "users", "total_spent", "total_spent INTEGER DEFAULT 0")
+    _ensure_column(cursor, "users", "orders_count", "orders_count INTEGER DEFAULT 0")
+    _ensure_column(cursor, "users", "is_banned", "is_banned INTEGER DEFAULT 0")
+    _ensure_column(cursor, "users", "referrer_id", "referrer_id INTEGER DEFAULT 0")
+    _ensure_column(cursor, "users", "is_alive", "is_alive INTEGER DEFAULT 1")
+    _ensure_column(cursor, "users", "agreed_to_rules", "agreed_to_rules INTEGER DEFAULT 0")
+
+
 def init_db():
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
@@ -154,13 +164,7 @@ def init_db():
             """
         )
 
-        _ensure_column(cursor, "users", "balance", "balance INTEGER DEFAULT 0")
-        _ensure_column(cursor, "users", "total_spent", "total_spent INTEGER DEFAULT 0")
-        _ensure_column(cursor, "users", "orders_count", "orders_count INTEGER DEFAULT 0")
-        _ensure_column(cursor, "users", "is_banned", "is_banned INTEGER DEFAULT 0")
-        _ensure_column(cursor, "users", "referrer_id", "referrer_id INTEGER DEFAULT 0")
-        _ensure_column(cursor, "users", "is_alive", "is_alive INTEGER DEFAULT 1")
-        _ensure_column(cursor, "users", "agreed_to_rules", "agreed_to_rules INTEGER DEFAULT 0")
+        _ensure_user_columns(cursor)
 
         if _column_exists(cursor, "orders", "order_type") and not _column_exists(cursor, "orders", "service_type"):
             cursor.execute("ALTER TABLE orders RENAME COLUMN order_type TO service_type")
@@ -248,6 +252,10 @@ async def add_user(user_id, username, full_name, referrer_id=0):
 async def get_user(user_id):
     conn = await get_connection()
     try:
+        cursor = conn.cursor()
+        _ensure_user_columns(cursor)
+        conn.commit()
+
         cursor = conn.execute(
             """
             SELECT user_id, username, full_name, balance, total_spent, orders_count, is_banned,
