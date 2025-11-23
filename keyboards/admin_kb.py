@@ -1,4 +1,6 @@
 from dataclasses import dataclass
+from typing import Iterable, Optional
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 
@@ -30,6 +32,52 @@ class OrderCallback:
         if payload == "-":
             payload = ""
         return cls(action=action, id=oid, payload=payload)
+
+
+@dataclass
+class UserCallback:
+    action: str
+    id: int
+    page: int = 0
+
+    prefix: str = "usr"
+
+    def pack(self) -> str:
+        return f"{self.prefix}:{self.action}:{self.id}:{self.page}"
+
+    @classmethod
+    def parse(cls, data: str) -> Optional["UserCallback"]:
+        try:
+            prefix, action, raw_id, raw_page = data.split(":", 3)
+        except ValueError:
+            return None
+        if prefix != cls.prefix:
+            return None
+        try:
+            parsed_id = int(raw_id)
+            page = int(raw_page)
+        except ValueError:
+            return None
+        return cls(action=action, id=parsed_id, page=page)
+
+
+@dataclass
+class StatsCallback:
+    action: str
+    prefix: str = "stat"
+
+    def pack(self) -> str:
+        return f"{self.prefix}:{self.action}:0:0"
+
+    @classmethod
+    def parse(cls, data: str) -> Optional["StatsCallback"]:
+        parts = data.split(":")
+        if len(parts) < 2:
+            return None
+        prefix, action = parts[0], parts[1]
+        if prefix != cls.prefix:
+            return None
+        return cls(action=action)
 
 
 def main_menu():
@@ -183,5 +231,77 @@ def user_profile_kb(user_id: int, order_id: int | None = None):
                 ),
             ],
             [InlineKeyboardButton("⬅️ Назад", callback_data=back_target)],
+        ]
+    )
+
+
+def get_users_list_kb(users: Iterable[dict], page: int = 0) -> InlineKeyboardMarkup:
+    kb: list[list[InlineKeyboardButton]] = []
+    users_list = list(users)
+    for user in users_list:
+        uname = f"@{user['username']}" if user.get("username") else "—"
+        label = f"{user.get('full_name') or 'Без имени'} ({uname}) | {user.get('balance', 0)}"
+        kb.append(
+            [
+                InlineKeyboardButton(
+                    label,
+                    callback_data=UserCallback(action="view", id=user["user_id"], page=page).pack(),
+                )
+            ]
+        )
+
+    nav: list[InlineKeyboardButton] = []
+    if page > 0:
+        nav.append(
+            InlineKeyboardButton(
+                "⬅️", callback_data=UserCallback(action="list", id=0, page=page - 1).pack()
+            )
+        )
+    if len(users_list) >= 10:
+        nav.append(
+            InlineKeyboardButton(
+                "➡️", callback_data=UserCallback(action="list", id=0, page=page + 1).pack()
+            )
+        )
+    if nav:
+        kb.append(nav)
+
+    kb.append([InlineKeyboardButton("⬅️ Назад", callback_data="admin_main")])
+    return InlineKeyboardMarkup(kb)
+
+
+def get_user_profile_kb(user_id: int, is_banned: bool, page: int = 0) -> InlineKeyboardMarkup:
+    ban_label = "✅ Разбанить" if is_banned else "🚫 Забанить"
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "✉️ DM", callback_data=UserCallback(action="msg", id=user_id, page=page).pack()
+                ),
+                InlineKeyboardButton(
+                    "📦 Заказы", callback_data=UserCallback(action="orders", id=user_id, page=page).pack()
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "➕ Баллы", callback_data=UserCallback(action="points_add", id=user_id, page=page).pack()
+                ),
+                InlineKeyboardButton(
+                    "➖ Баллы", callback_data=UserCallback(action="points_sub", id=user_id, page=page).pack()
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    ban_label, callback_data=UserCallback(action="ban", id=user_id, page=page).pack()
+                ),
+                InlineKeyboardButton(
+                    "📝 Заметка", callback_data=UserCallback(action="note", id=user_id, page=page).pack()
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "⬅️ Назад", callback_data=UserCallback(action="list", id=0, page=page).pack()
+                )
+            ],
         ]
     )

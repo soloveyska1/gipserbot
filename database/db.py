@@ -1,4 +1,6 @@
 import sqlite3
+from typing import List, Dict, Any
+
 from config import DB_PATH
 from database import core
 
@@ -7,7 +9,27 @@ def _get_conn():
     return sqlite3.connect(DB_PATH)
 
 
+def _column_exists(cursor: sqlite3.Cursor, table: str, column: str) -> bool:
+    cursor.execute(f"PRAGMA table_info({table})")
+    return any(row[1] == column for row in cursor.fetchall())
+
+
+def _ensure_user_columns():
+    """Guarantee the presence of new CRM columns in legacy databases."""
+    conn = _get_conn()
+    cur = conn.cursor()
+    if not _column_exists(cur, "users", "is_banned"):
+        cur.execute("ALTER TABLE users ADD COLUMN is_banned INTEGER DEFAULT 0")
+    if not _column_exists(cur, "users", "admin_note"):
+        cur.execute("ALTER TABLE users ADD COLUMN admin_note TEXT")
+    if not _column_exists(cur, "users", "total_spent"):
+        cur.execute("ALTER TABLE users ADD COLUMN total_spent INTEGER DEFAULT 0")
+    conn.commit()
+    conn.close()
+
+
 def _ensure_promo_tables():
+    _ensure_user_columns()
     conn = _get_conn()
     cur = conn.cursor()
     cur.execute(
@@ -30,6 +52,49 @@ def _ensure_promo_tables():
         """
     )
     conn.commit()
+    conn.close()
+
+
+async def get_all_users_paginated(page: int, page_size: int = 10) -> List[Dict[str, Any]]:
+    """Return a paginated slice of users with CRM fields for the admin list."""
+    _ensure_user_columns()
+    conn = _get_conn()
+    conn.row_factory = sqlite3.Row
+    offset = max(page, 0) * page_size
+    cur = conn.execute(
+        """
+        SELECT user_id, username, full_name, balance, is_banned, admin_note, total_spent,
+               orders_count, joined_at, referrer_id
+        FROM users
+        ORDER BY user_id
+        LIMIT ? OFFSET ?
+        """,
+        (page_size, offset),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+async def update_admin_note(user_id: int, text: str) -> None:
+    _ensure_user_columns()
+    conn = _get_conn()
+    with conn:
+        conn.execute(
+            "UPDATE users SET admin_note = ? WHERE user_id = ?",
+            (text, user_id),
+        )
+    conn.close()
+
+
+async def set_ban_status(user_id: int, is_banned: bool) -> None:
+    _ensure_user_columns()
+    conn = _get_conn()
+    with conn:
+        conn.execute(
+            "UPDATE users SET is_banned = ? WHERE user_id = ?",
+            (1 if is_banned else 0, user_id),
+        )
     conn.close()
 
 
