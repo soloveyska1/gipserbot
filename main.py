@@ -5,9 +5,18 @@ from pathlib import Path
 
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ConversationHandler
 
+# Ensure the project root is always importable, no matter the working dir
 BASE_DIR = Path(__file__).resolve().parent
-if str(BASE_DIR) not in sys.path:
-    sys.path.insert(0, str(BASE_DIR))
+PARENT_DIR = BASE_DIR.parent
+for path in (str(BASE_DIR), str(PARENT_DIR)):
+    if path not in sys.path:
+        sys.path.insert(0, path)
+
+# Normalize CWD to the project root so relative imports/files behave the same in all environments
+try:
+    os.chdir(BASE_DIR)
+except Exception:
+    pass
 
 from config import BOT_TOKEN, LOGS_DIR
 from database.core import init_db
