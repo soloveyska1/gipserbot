@@ -87,7 +87,7 @@ def main_menu():
             [InlineKeyboardButton("📦 Заказы", callback_data=OrderCallback(action="list", id=0).pack())],
             [InlineKeyboardButton("⚙️ Прайс", callback_data="admin_prices")],
             [InlineKeyboardButton("📢 Рассылка", callback_data="admin_broadcast")],
-            [InlineKeyboardButton("👀 Статистика", callback_data="admin_stats")],
+            [InlineKeyboardButton("👀 Статистика", callback_data=StatsCallback(action="view").pack())],
         ]
     )
 
@@ -304,5 +304,40 @@ def get_user_profile_kb(user_id: int, is_banned: bool, page: int = 0) -> InlineK
                     "⬅️ Назад", callback_data=UserCallback(action="list", id=0, page=page).pack()
                 )
             ],
+        ]
+    )
+
+
+def stats_menu():
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "📉 Сбросить статистику", callback_data=StatsCallback(action="reset").pack()
+                )
+            ],
+            [InlineKeyboardButton("⬅️ Назад", callback_data="admin_main")],
+        ]
+    )
+
+
+def broadcast_audience_kb():
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("🌐 Все", callback_data="bc_aud_all"),
+                InlineKeyboardButton("🔥 Активные", callback_data="bc_aud_active"),
+                InlineKeyboardButton("💤 Молчуны", callback_data="bc_aud_silent"),
+            ],
+            [InlineKeyboardButton("❌ Отмена", callback_data="admin_main")],
+        ]
+    )
+
+
+def broadcast_confirm_kb():
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("✅ Отправить", callback_data="bc_confirm_yes")],
+            [InlineKeyboardButton("❌ Отмена", callback_data="admin_main")],
         ]
     )

@@ -1,5 +1,7 @@
+import asyncio
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.error import BadRequest
+from telegram.error import BadRequest, Forbidden
 from telegram.ext import ContextTypes, ConversationHandler, MessageHandler, CallbackQueryHandler, CommandHandler, filters
 
 from config import ADMIN_IDS, SERVICES
@@ -7,7 +9,7 @@ from database import core as db
 from database import db as crm_db
 from database import pricing
 from keyboards import admin_kb
-from keyboards.admin_kb import OrderCallback, UserCallback
+from keyboards.admin_kb import OrderCallback, StatsCallback, UserCallback
 
 PRICE_STATE = 1
 BALANCE_STATE = 2
@@ -15,6 +17,9 @@ NOTE_STATE = 3
 DM_STATE = 4
 USER_REPLY_STATE = 5
 CLIENT_BALANCE_STATE = 6
+BROADCAST_CONTENT_STATE = 7
+BROADCAST_AUDIENCE_STATE = 8
+BROADCAST_CONFIRM_STATE = 9
 ALLOWED_STATUSES = {
     "checking",
     "pending_pay",
@@ -63,6 +68,13 @@ def _parse_user_callback(update: Update) -> UserCallback | None:
     if not query or not query.data:
         return None
     return UserCallback.parse(query.data)
+
+
+def _parse_stats_callback(update: Update) -> StatsCallback | None:
+    query = update.callback_query
+    if not query or not query.data:
+        return None
+    return StatsCallback.parse(query.data)
 
 
 def _rank_by_spent(total_spent: int) -> str:
@@ -648,29 +660,196 @@ async def cancel_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-# --- STATS / BROADCAST PLACEHOLDERS ---
+# --- STATS / BROADCAST ---
+async def _collect_stats():
+    conn = await db.get_connection()
+    try:
+        new_today = conn.execute(
+            "SELECT COUNT(*) FROM users WHERE date(joined_at) = date('now')"
+        ).fetchone()[0]
+        new_week = conn.execute(
+            "SELECT COUNT(*) FROM users WHERE date(joined_at) >= date('now','-7 day')"
+        ).fetchone()[0]
+        revenue = conn.execute(
+            "SELECT COALESCE(SUM(CASE WHEN final_price>0 THEN final_price ELSE price END),0) FROM orders WHERE status != 'cancel'"
+        ).fetchone()[0]
+        top_rows = conn.execute(
+            "SELECT user_id, username, full_name, total_spent FROM users ORDER BY total_spent DESC LIMIT 3"
+        ).fetchall()
+    finally:
+        conn.close()
+    top = []
+    for row in top_rows:
+        uname = f"@{row[1]}" if row[1] else "—"
+        name = row[2] or row[0]
+        top.append(f"{name} ({uname}) — {row[3]} ₽")
+    return {
+        "new_today": new_today,
+        "new_week": new_week,
+        "revenue": revenue,
+        "top": top,
+    }
+
+
+async def _reset_stats():
+    conn = await db.get_connection()
+    try:
+        conn.execute("UPDATE users SET total_spent = 0, orders_count = 0")
+        conn.execute("UPDATE orders SET price = 0, original_price = 0, final_price = 0, points_used = 0")
+        conn.commit()
+    finally:
+        conn.close()
+
+
 async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_admin(update.effective_user.id):
         return
     query = update.callback_query
     if query:
         await query.answer()
-    u, o, m = await db.get_stats()
-    text = f"📊 <b>СТАТИСТИКА</b>\n👥 Юзеров: {u}\n📦 Заказов: {o}\n💵 Оборот: {m} ₽"
-    markup = admin_kb.main_menu()
+    cb = _parse_stats_callback(update)
+    if cb and cb.action == "confirm_reset":
+        await _reset_stats()
+    data = await _collect_stats()
+    lines = [
+        "📊 <b>СТАТИСТИКА</b>",
+        f"👥 Новые сегодня: {data['new_today']}",
+        f"📈 Новые за неделю: {data['new_week']}",
+        f"💵 Оборот: {data['revenue']} ₽",
+        "🏆 Топ-3 клиентов:",
+    ]
+    if data["top"]:
+        lines.extend([f"{idx+1}. {row}" for idx, row in enumerate(data["top"])])
+    else:
+        lines.append("— пока пусто")
+    text = "\n".join(lines)
+    markup = admin_kb.stats_menu()
+    if cb and cb.action == "reset":
+        # show confirmation prompt
+        confirm = InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("✅ Сбросить", callback_data=StatsCallback(action="confirm_reset").pack())],
+                [InlineKeyboardButton("⬅️ Назад", callback_data=StatsCallback(action="view").pack())],
+            ]
+        )
+        await _safe_edit(query, "Подтвердите сброс статистики", reply_markup=confirm)
+        return
     if query:
         await _safe_edit(query, text, reply_markup=markup, parse_mode="HTML")
     else:
         await update.message.reply_text(text, reply_markup=markup, parse_mode="HTML")
 
 
-async def broadcast_placeholder(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_admin(update.effective_user.id):
-        return
+        return ConversationHandler.END
     query = update.callback_query
     if query:
-        await query.answer("Скоро", show_alert=False)
-        await _safe_edit(query, "📢 РАССЫЛКА скоро будет доступна", reply_markup=admin_kb.main_menu())
+        await query.answer()
+    context.user_data.pop("broadcast", None)
+    await _safe_edit(
+        query,
+        "📢 Отправьте текст или фото для рассылки",
+        reply_markup=admin_kb.cancel_kb("admin_main"),
+    )
+    return BROADCAST_CONTENT_STATE
+
+
+async def capture_broadcast_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update.effective_user.id):
+        return ConversationHandler.END
+    message = update.message
+    if message.photo:
+        photo_id = message.photo[-1].file_id
+        context.user_data["broadcast"] = {
+            "type": "photo",
+            "file_id": photo_id,
+            "caption": message.caption or "",
+        }
+    elif message.text:
+        context.user_data["broadcast"] = {"type": "text", "text": message.text}
+    else:
+        await message.reply_text("⚠️ Пришлите текст или фото")
+        return BROADCAST_CONTENT_STATE
+
+    await message.reply_text("Выберите аудиторию:", reply_markup=admin_kb.broadcast_audience_kb())
+    return BROADCAST_AUDIENCE_STATE
+
+
+async def choose_broadcast_audience(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update.effective_user.id):
+        return ConversationHandler.END
+    query = update.callback_query
+    if query:
+        await query.answer()
+    audience_map = {
+        "bc_aud_all": "all",
+        "bc_aud_active": "active",
+        "bc_aud_silent": "silent",
+    }
+    kind = audience_map.get(query.data if query else "")
+    if not kind:
+        return BROADCAST_AUDIENCE_STATE
+    context.user_data.setdefault("broadcast", {})["audience"] = kind
+    await _safe_edit(
+        query,
+        "Подтвердите отправку?",
+        reply_markup=admin_kb.broadcast_confirm_kb(),
+    )
+    return BROADCAST_CONFIRM_STATE
+
+
+async def _get_broadcast_targets(kind: str):
+    conn = await db.get_connection()
+    try:
+        if kind == "active":
+            cur = conn.execute(
+                "SELECT DISTINCT user_id FROM orders WHERE created_at >= date('now','-30 day')"
+            )
+        elif kind == "silent":
+            cur = conn.execute("SELECT user_id FROM users WHERE orders_count = 0")
+        else:
+            cur = conn.execute("SELECT user_id FROM users WHERE is_banned = 0")
+        rows = [r[0] for r in cur.fetchall()]
+    finally:
+        conn.close()
+    return rows
+
+
+async def confirm_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update.effective_user.id):
+        return ConversationHandler.END
+    query = update.callback_query
+    if query:
+        await query.answer()
+    if query.data == "admin_main":
+        await _safe_edit(query, "Отменено", reply_markup=admin_kb.main_menu())
+        return ConversationHandler.END
+    payload = context.user_data.get("broadcast") or {}
+    if not payload.get("audience"):
+        await _safe_edit(query, "⚠️ Сначала выберите аудиторию", reply_markup=admin_kb.broadcast_audience_kb())
+        return BROADCAST_AUDIENCE_STATE
+    targets = await _get_broadcast_targets(payload["audience"])
+    sent = 0
+    for uid in targets:
+        try:
+            if payload.get("type") == "photo":
+                await query.bot.send_photo(uid, payload["file_id"], caption=payload.get("caption"))
+            else:
+                await query.bot.send_message(uid, payload.get("text", ""))
+            sent += 1
+        except Forbidden:
+            continue
+        except Exception:
+            continue
+        await asyncio.sleep(0.05)
+    await _safe_edit(
+        query,
+        f"✅ Рассылка завершена. Доставлено: {sent}/{len(targets)}",
+        reply_markup=admin_kb.main_menu(),
+    )
+    context.user_data.pop("broadcast", None)
+    return ConversationHandler.END
 
 
 async def order_callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -784,6 +963,26 @@ def setup(app):
     )
     app.add_handler(user_reply_conv)
 
-    app.add_handler(CallbackQueryHandler(show_stats, pattern="^admin_stats$"))
-    app.add_handler(CallbackQueryHandler(broadcast_placeholder, pattern="^admin_broadcast$"))
+    app.add_handler(CallbackQueryHandler(show_stats, pattern=r"^stat:"))
+
+    broadcast_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(start_broadcast, pattern="^admin_broadcast$")],
+        states={
+            BROADCAST_CONTENT_STATE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, capture_broadcast_content),
+                MessageHandler(filters.PHOTO, capture_broadcast_content),
+                CallbackQueryHandler(back_to_main, pattern="^admin_main$"),
+            ],
+            BROADCAST_AUDIENCE_STATE: [
+                CallbackQueryHandler(choose_broadcast_audience, pattern=r"^bc_aud_(all|active|silent)$"),
+                CallbackQueryHandler(back_to_main, pattern="^admin_main$"),
+            ],
+            BROADCAST_CONFIRM_STATE: [
+                CallbackQueryHandler(confirm_broadcast, pattern=r"^bc_confirm_yes$|^admin_main$"),
+            ],
+        },
+        fallbacks=[CallbackQueryHandler(back_to_main, pattern="^admin_main$")],
+        per_message=False,
+    )
+    app.add_handler(broadcast_conv)
 

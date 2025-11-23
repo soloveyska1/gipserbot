@@ -5,7 +5,7 @@ def main_menu(user_id):
     kb = [
         [InlineKeyboardButton("⚡️ РАССЧИТАТЬ ЗАКАЗ", callback_data="new_order")],
         [InlineKeyboardButton("👤 Мой сейф (Профиль)", callback_data="profile"), InlineKeyboardButton("💎 Партнерка", callback_data="partners")],
-        [InlineKeyboardButton("💬 Отзывы", url="https://t.me/durov"), InlineKeyboardButton("🆘 Саппорт", url=f"tg://user?id={ADMIN_ID}")],
+        [InlineKeyboardButton("💬 Отзывы", url="https://t.me/c/178428445/1"), InlineKeyboardButton("🆘 Саппорт", url=f"tg://user?id={ADMIN_ID}")],
     ]
     return InlineKeyboardMarkup(kb)
 
