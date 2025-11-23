@@ -58,6 +58,7 @@ def main():
     app.add_handler(CallbackQueryHandler(client.accept_rules, pattern="^rules_accept$"))
     app.add_handler(CallbackQueryHandler(client.profile, pattern="^profile$"))
     app.add_handler(CallbackQueryHandler(client.show_price_list, pattern="^price_list$"))
+    app.add_handler(CallbackQueryHandler(client.back_to_main_menu, pattern="^back_to_main_menu$"))
     app.add_handler(CallbackQueryHandler(client.show_price_card, pattern="^price_srv_"))
     app.add_handler(CallbackQueryHandler(client.show_code_of_honor, pattern="^code_honor$"))
     app.add_handler(MessageHandler(filters.Regex(r"^📜 Меню \(Цены\)$"), client.show_price_list_text))

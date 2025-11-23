@@ -83,7 +83,10 @@ async def start_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _safe_edit(
         query,
         "💼 <b>ШАГ 1/4: ОБЪЕКТ РАБОТЫ</b>\nВыберите тип задачи:",
-        reply_markup=builders.create_dynamic_service_keyboard(services), parse_mode="HTML"
+        reply_markup=builders.create_dynamic_service_keyboard(
+            services, back_cb="home", back_text="🔙 В меню"
+        ),
+        parse_mode="HTML",
     )
     return TYPE
 
@@ -141,7 +144,9 @@ async def confirm_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _safe_edit(
             query,
             "💼 <b>ШАГ 1/4: ОБЪЕКТ РАБОТЫ</b>\nВыберите тип задачи:",
-            reply_markup=builders.create_dynamic_service_keyboard(services),
+            reply_markup=builders.create_dynamic_service_keyboard(
+                services, back_cb="home", back_text="🔙 В меню"
+            ),
             parse_mode="HTML",
         )
         return TYPE

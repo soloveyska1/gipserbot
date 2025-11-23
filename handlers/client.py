@@ -208,8 +208,8 @@ async def _render_price_menu(update: Update, context: Any, via_callback: bool = 
     markup = builders.create_dynamic_service_keyboard(
         services,
         prefix="price_srv_",
-        back_cb="price_list",
-        back_text="🔙 Назад к ценам",
+        back_cb="back_to_main_menu",
+        back_text="🏠 В главное меню",
     )
 
     if via_callback and update.callback_query:
@@ -248,8 +248,8 @@ async def show_price_list(update: Update, context: Any):
     markup = builders.create_dynamic_service_keyboard(
         services,
         prefix="price_srv_",
-        back_cb="price_list",
-        back_text="🔙 Назад к ценам",
+        back_cb="back_to_main_menu",
+        back_text="🏠 В главное меню",
     )
 
     if query.message and query.message.photo:
@@ -266,6 +266,29 @@ async def show_price_list(update: Update, context: Any):
         return await query.message.reply_text(
             text=text, reply_markup=markup, parse_mode="HTML"
         )
+
+
+async def back_to_main_menu(update: Update, context: Any):
+    query = update.callback_query
+    await query.answer()
+
+    allowed = await _ensure_rules(update, context)
+    if not allowed:
+        return ConversationHandler.END
+
+    chat_id = query.message.chat_id if query.message else update.effective_chat.id
+    try:
+        if query.message:
+            await query.message.delete()
+    except Exception:
+        pass
+
+    return await context.bot.send_message(
+        chat_id=chat_id,
+        text="🏠 Главное меню. Выбирай нужный раздел, партнер.",
+        reply_markup=kb.main_kb(query.from_user.id),
+        parse_mode="HTML",
+    )
 
 
 async def show_price_list_text(update: Update, context: Any):

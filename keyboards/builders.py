@@ -54,7 +54,11 @@ def admin_dashboard():
 
 
 def create_dynamic_service_keyboard(
-    services, *, prefix: str = "srv_", back_cb: str = "home", back_text: str = "🔙 В меню"
+    services,
+    *,
+    prefix: str = "srv_",
+    back_cb: str = "back_to_main_menu",
+    back_text: str = "🏠 В главное меню",
 ):
     """Собирает клавиатуру услуг из актуальных данных БД."""
     rows = []
