@@ -10,7 +10,20 @@ from config import URGENCY_MULTIPLIER, ADMIN_IDS
 
 MSG_UPSELL = "🛡 <b>ДОПОЛНИТЕЛЬНАЯ ЗАЩИТА</b>\nХотите добавить броню к вашему заказу?"
 
-TYPE, SERVICE_CARD, TOPIC, DEADLINE, UPSELL, PAY_CHOICE, CONFIRM = range(7)
+INTRO_TEXT = (
+    "💼 <b>ШАГ 1/4: ВЫБОР ЦЕЛИ</b>\n\n"
+    "Партнер, время — деньги.\n"
+    "Выбери задачу, которую нужно решить, и мы добудем результат, пока ты отдыхаешь.\n\n"
+    "👇 <b>Жми на карту:</b>"
+)
+
+CONSULT_PROMPT = (
+    "🤠 <b>Спокойно, партнер.</b>\n"
+    "Запутался в картах? Не беда.\n\n"
+    "Напиши ниже, что нужно сделать (или просто скинь методичку), и Шериф сам подберет вариант."
+)
+
+TYPE, SERVICE_CARD, TOPIC, DEADLINE, UPSELL, PAY_CHOICE, CONFIRM, CONSULT = range(8)
 
 
 async def _safe_edit(query, text, **kwargs):
@@ -82,7 +95,7 @@ async def start_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await _safe_edit(
         query,
-        "💼 <b>ШАГ 1/4: ОБЪЕКТ РАБОТЫ</b>\nВыберите тип задачи:",
+        INTRO_TEXT,
         reply_markup=builders.create_dynamic_service_keyboard(
             services, back_cb="home", back_text="🔙 В меню"
         ),
@@ -95,6 +108,9 @@ async def get_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     if query.data == "home": return ConversationHandler.END
+    if query.data == "order_consult":
+        await _safe_edit(query, CONSULT_PROMPT, parse_mode="HTML")
+        return CONSULT
     data = query.data or ""
     if not data.startswith("srv_"):
         return TYPE
@@ -143,7 +159,7 @@ async def confirm_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return ConversationHandler.END
         await _safe_edit(
             query,
-            "💼 <b>ШАГ 1/4: ОБЪЕКТ РАБОТЫ</b>\nВыберите тип задачи:",
+            INTRO_TEXT,
             reply_markup=builders.create_dynamic_service_keyboard(
                 services, back_cb="home", back_text="🔙 В меню"
             ),
@@ -189,6 +205,28 @@ async def get_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=kb.deadline_kb(), parse_mode="HTML"
     )
     return DEADLINE
+
+
+async def handle_consultation_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    message = update.effective_message
+
+    header = (
+        "#CONSULTATION\n"
+        f"👤 {user.full_name} (@{user.username or '—'})\n"
+        f"ID: {user.id}"
+    )
+    for admin_id in ADMIN_IDS:
+        try:
+            await context.bot.send_message(admin_id, header)
+            await context.bot.copy_message(
+                admin_id, from_chat_id=message.chat_id, message_id=message.message_id
+            )
+        except Exception:
+            pass
+
+    await message.reply_text("Принято. Жди сигнала.", reply_markup=kb.main_kb(user.id))
+    return ConversationHandler.END
 
 # 4. Апселл (Допродажа)
 async def get_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE):

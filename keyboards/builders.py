@@ -57,18 +57,48 @@ def create_dynamic_service_keyboard(
     services,
     *,
     prefix: str = "srv_",
-    back_cb: str = "back_to_main_menu",
-    back_text: str = "🏠 В главное меню",
+    back_cb: str = "home",
+    back_text: str = "🔙 В меню",
 ):
-    """Собирает клавиатуру услуг из актуальных данных БД."""
-    rows = []
-    for srv in services:
+    """Собирает клавиатуру услуг с иерархией и кнопкой консультации."""
+
+    def make_button(srv):
         name = srv.get("name", "Услуга")
         price = srv.get("price", 0)
-        with_price = f"{name} — {price}₽"
-        label = with_price if len(with_price) <= 40 else name
-        rows.append([InlineKeyboardButton(label, callback_data=f"{prefix}{srv['id']}")])
+        label = name
+        if name.startswith("Курсовая"):
+            label = f"🔥 {label}"
+        elif name.startswith("Магистерская"):
+            label = f"{label} — {price}₽"
+        elif not name.startswith("Диплом"):
+            priced = f"{label} — {price}₽"
+            label = priced if len(priced) <= 40 else label
+        return InlineKeyboardButton(label, callback_data=f"{prefix}{srv['id']}")
 
+    rows = []
+
+    priority_order = ["Диплом", "Магистерская", "Курсовая"]
+    prioritized = []
+    for target in priority_order:
+        srv = next((s for s in services if s.get("name", "").startswith(target)), None)
+        if srv:
+            prioritized.append(srv)
+            rows.append([make_button(srv)])
+
+    standard_services = [
+        srv for srv in services if srv not in prioritized
+    ]
+
+    for i in range(0, len(standard_services), 2):
+        pair = standard_services[i : i + 2]
+        row = [make_button(pair[0])]
+        if len(pair) > 1:
+            row.append(make_button(pair[1]))
+        rows.append(row)
+
+    rows.append(
+        [InlineKeyboardButton("🆘 Не знаю, что выбрать (Спросить)", callback_data="order_consult")]
+    )
     rows.append([InlineKeyboardButton(back_text, callback_data=back_cb)])
     return InlineKeyboardMarkup(rows)
 

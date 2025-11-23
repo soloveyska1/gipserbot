@@ -34,7 +34,7 @@ def main():
     order_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(order_flow.start_order, pattern="^order_start$")],
         states={
-            order_flow.TYPE: [CallbackQueryHandler(order_flow.get_type, pattern="^srv_")],
+            order_flow.TYPE: [CallbackQueryHandler(order_flow.get_type, pattern="^srv_|^order_consult$")],
             order_flow.SERVICE_CARD: [CallbackQueryHandler(order_flow.confirm_service, pattern="^srv_confirm_|^srv_back$")],
             order_flow.TOPIC: [
                 MessageHandler(filters.Document.ALL | filters.PHOTO | filters.TEXT & ~filters.COMMAND, order_flow.get_topic),
@@ -43,7 +43,13 @@ def main():
             order_flow.DEADLINE: [CallbackQueryHandler(order_flow.get_deadline, pattern="^time_|^back_to_topic$")],
             order_flow.UPSELL: [CallbackQueryHandler(order_flow.get_upsell, pattern="^toggle_|^upsell_done$|^back_to_deadline$")],
             order_flow.PAY_CHOICE: [CallbackQueryHandler(order_flow.handle_payment_choice, pattern="^use_points_yes$|^use_points_no$")],
-            order_flow.CONFIRM: [CallbackQueryHandler(order_flow.confirm_order, pattern="^submit_order$|^home$")]
+            order_flow.CONFIRM: [CallbackQueryHandler(order_flow.confirm_order, pattern="^submit_order$|^home$")],
+            order_flow.CONSULT: [
+                MessageHandler(
+                    filters.Document.ALL | filters.PHOTO | filters.TEXT & ~filters.COMMAND,
+                    order_flow.handle_consultation_request,
+                )
+            ],
         },
         fallbacks=[
             CallbackQueryHandler(client.start, pattern="^home$"),
