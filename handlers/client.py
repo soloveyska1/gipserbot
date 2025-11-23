@@ -237,7 +237,7 @@ async def show_price_list(update: types.Update, context: Any):
         empty_text = "⚠️ Технический перерыв: список услуг пуст. Сообщите шерифу."
         if query.message and query.message.photo:
             await query.message.delete()
-            return await query.message.answer(
+            return await query.message.reply_text(
                 text=empty_text, reply_markup=kb.back_kb("home"), parse_mode="HTML"
             )
         try:
@@ -245,7 +245,7 @@ async def show_price_list(update: types.Update, context: Any):
                 text=empty_text, reply_markup=kb.back_kb("home"), parse_mode="HTML"
             )
         except Exception:
-            return await query.message.answer(
+            return await query.message.reply_text(
                 text=empty_text, reply_markup=kb.back_kb("home"), parse_mode="HTML"
             )
 
@@ -258,7 +258,7 @@ async def show_price_list(update: types.Update, context: Any):
 
     if query.message and query.message.photo:
         await query.message.delete()
-        return await query.message.answer(
+        return await query.message.reply_text(
             text=text, reply_markup=markup, parse_mode="HTML"
         )
 
@@ -267,7 +267,7 @@ async def show_price_list(update: types.Update, context: Any):
             text=text, reply_markup=markup, parse_mode="HTML"
         )
     except Exception:
-        return await query.message.answer(
+        return await query.message.reply_text(
             text=text, reply_markup=markup, parse_mode="HTML"
         )
 
