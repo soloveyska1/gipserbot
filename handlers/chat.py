@@ -1,20 +1,50 @@
 from telegram import Update
+from telegram.error import BadRequest
 from telegram.ext import ContextTypes, ConversationHandler
 from database import core as db
 from keyboards import menu as kb
+from keyboards import admin_kb
+from keyboards.admin_kb import OrderCallback
 from config import ADMIN_ID
 
 CHAT_STEP = 1
+
+async def _safe_edit(query, text, **kwargs):
+    msg = query.message
+    try:
+        if msg and msg.text:
+            return await query.edit_message_text(text, **kwargs)
+        if msg and msg.caption:
+            return await query.edit_message_caption(caption=text, **kwargs)
+    except BadRequest as exc:
+        if "not modified" in str(exc).lower():
+            return msg
+    return await query.message.reply_text(text, **kwargs)
+
 
 async def chat_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     try:
         await query.answer()
         print(f"DEBUG: chat_start triggered with data: {query.data}") # LOGGING
+
+        user = await db.get_user(query.from_user.id)
+        if not user or not user.get("agreed_to_rules"):
+            await context.bot.send_message(
+                chat_id=query.from_user.id,
+                text="📜 Прими Кодекс Чести, чтобы открыть двери чата.",
+                reply_markup=kb.rules_accept_kb(),
+                parse_mode="HTML",
+            )
+            return ConversationHandler.END
         
         data = query.data
-        # adm_chat_OID or chat_order_OID
-        if "adm_chat_" in data:
+        # adm_chat_OID or chat_order_OID or ord:chat:OID
+        if data.startswith(OrderCallback.prefix + ":"):
+            cb = OrderCallback.parse(data)
+            oid = cb.id if cb else 0
+            is_admin = True
+        elif "adm_chat_" in data:
             oid = int(data.split("_")[-1])
             is_admin = True
         else:
@@ -37,11 +67,16 @@ async def chat_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         txt += "\n✍️ <i>Напишите сообщение или отправьте файл...</i>"
         
-        await query.edit_message_text(txt, reply_markup=kb.chat_kb(oid, is_admin), parse_mode="HTML")
+        await _safe_edit(query, txt, reply_markup=kb.chat_kb(oid, is_admin), parse_mode="HTML")
         return CHAT_STEP
     except Exception as e:
         print(f"ERROR in chat_start: {e}")
-        try: await query.edit_message_text(f"❌ Ошибка чата: {e}", reply_markup=kb.main_kb(update.effective_user.id))
+        try:
+            await _safe_edit(
+                query,
+                f"❌ Ошибка чата: {e}",
+                reply_markup=kb.main_kb(update.effective_user.id),
+            )
         except: pass
         return ConversationHandler.END
 
@@ -114,9 +149,9 @@ async def cancel_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📝 Тема: {o['topic']}\n"
         )
         if query:
-            await query.edit_message_text(txt, reply_markup=kb.admin_order_actions(oid, o['status']), parse_mode="HTML")
+            await _safe_edit(query, txt, reply_markup=admin_kb.order_actions(oid, o['status'], o['user_id']), parse_mode="HTML")
         else:
-            await update.message.reply_text(txt, reply_markup=kb.admin_order_actions(oid, o['status']), parse_mode="HTML")
+            await update.message.reply_text(txt, reply_markup=admin_kb.order_actions(oid, o['status'], o['user_id']), parse_mode="HTML")
     else:
         # Redirect to client order view
         o = await db.get_order(oid)
@@ -130,7 +165,7 @@ async def cancel_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📊 Статус: {o['status']}\n"
         )
         if query:
-            await query.edit_message_text(txt, reply_markup=kb.order_details_kb(oid), parse_mode="HTML")
+            await _safe_edit(query, txt, reply_markup=kb.order_details_kb(oid), parse_mode="HTML")
         else:
             await update.message.reply_text(txt, reply_markup=kb.order_details_kb(oid), parse_mode="HTML")
             
