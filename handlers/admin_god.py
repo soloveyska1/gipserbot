@@ -67,12 +67,23 @@ async def order_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
         oid = int(data.split("_")[-1])
     o = await db.get_order(oid)
     
+    status_label = {
+        "checking": "🟡 На проверке",
+        "pending_pay": "💳 Ждёт оплаты",
+        "work": "⚙️ В работе",
+        "norm_control": "🧭 Нормконтроль",
+        "edits": "✏️ Правки",
+        "suspended": "⏸ Приостановлен",
+        "done": "✅ Выполнен",
+        "cancel": "❌ Отменён",
+    }
+
     txt = (
         f"📦 <b>ЗАКАЗ #{oid}</b>\n"
         f"👤 Юзер: {o['user_id']}\n"
         f"📚 Тип: {o['service_type']}\n"
         f"💰 Цена: {o['price']} ₽\n"
-        f"📊 Статус: {o['status']}\n"
+        f"📊 Статус: {status_label.get(o['status'], o['status'])}\n"
         f"📝 Тема: {o['topic']}\n"
     )
     await _safe_edit(query, txt, reply_markup=kb.admin_order_actions(oid, o['status']), parse_mode="HTML")
@@ -91,6 +102,9 @@ async def set_order_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "work": "⚙️ <b>Ваш заказ #{oid} взят в работу!</b>\nМы начали. Ожидайте.",
         "done": "✅ <b>Заказ #{oid} ГОТОВ!</b>\nПринимайте работу.",
         "pending_pay": "💳 <b>По заказу #{oid} ожидается оплата.</b>",
+        "norm_control": "🧭 <b>Заказ #{oid} на нормоконтроле.</b>\nПроверяем соответствие требованиям.",
+        "edits": "✏️ <b>Заказ #{oid} на правках.</b>\nИсправляем замечания.",
+        "suspended": "⏸ <b>Заказ #{oid} приостановлен.</b>\nСвяжитесь с шерифом для деталей.",
         "cancel": "❌ <b>Заказ #{oid} отменен.</b>"
     }
     if status in status_msg:

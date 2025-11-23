@@ -123,9 +123,24 @@ def admin_orders_list_kb(orders, page=0):
     end = start + 5
     current_orders = orders[start:end]
     
+    status_emoji = {
+        "checking": "🟡",
+        "pending_pay": "💳",
+        "work": "⚙️",
+        "norm_control": "🧭",
+        "edits": "✏️",
+        "suspended": "⏸",
+        "done": "✅",
+        "cancel": "❌",
+    }
+
     for o in current_orders:
-        status_emoji = {"review": "🟡", "pending_pay": "💳", "work": "⚙️", "done": "✅", "cancel": "❌"}
-        kb.append([InlineKeyboardButton(f"{status_emoji.get(o['status'], '?')} #{o['id']} | {o['price']}₽", callback_data=f"adm_order_{o['id']}")])
+        kb.append([
+            InlineKeyboardButton(
+                f"{status_emoji.get(o['status'], '?')} #{o['id']} | {o['price']}₽",
+                callback_data=f"adm_order_{o['id']}",
+            )
+        ])
     
     nav = []
     if page > 0: nav.append(InlineKeyboardButton("⬅️", callback_data=f"adm_ord_page_{page-1}"))
@@ -140,6 +155,8 @@ def admin_order_actions(oid, status):
         [InlineKeyboardButton("💬 ЧАТ ЗАКАЗА", callback_data=f"adm_chat_{oid}")],
         [InlineKeyboardButton("⚙️ В работу", callback_data=f"set_status_{oid}_work"), InlineKeyboardButton("✅ Выполнен", callback_data=f"set_status_{oid}_done")],
         [InlineKeyboardButton("💳 Ждет оплаты", callback_data=f"set_status_{oid}_pending_pay"), InlineKeyboardButton("❌ Отменить", callback_data=f"set_status_{oid}_cancel")],
+        [InlineKeyboardButton("🧭 Нормконтроль", callback_data=f"set_status_{oid}_norm_control"), InlineKeyboardButton("✏️ Правки", callback_data=f"set_status_{oid}_edits")],
+        [InlineKeyboardButton("⏸ Приостановить", callback_data=f"set_status_{oid}_suspended")],
         [InlineKeyboardButton("🔙 Назад к списку", callback_data="adm_orders_list")]
     ]
     return InlineKeyboardMarkup(kb)
