@@ -73,10 +73,21 @@ def _ensure_services_table():
 
 
 def seed_services():
-    """Заполняет/обновляет салунный каталог услуг и чистит тестовые позиции."""
-    _ensure_services_table()
+    """Полностью пересоздает таблицу услуг и наполняет утвержденным списком."""
     conn = _get_conn()
     cur = conn.cursor()
+
+    cur.execute("DROP TABLE IF EXISTS services")
+    cur.execute(
+        """
+        CREATE TABLE services (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT,
+            price INTEGER,
+            description TEXT
+        )
+        """
+    )
 
     services_data = [
         (
@@ -126,8 +137,6 @@ def seed_services():
         ),
     ]
 
-    cur.execute("DELETE FROM services")
-    cur.execute("DELETE FROM sqlite_sequence WHERE name='services'")
     cur.executemany(
         "INSERT INTO services (name, price, description) VALUES (?, ?, ?)",
         services_data,
