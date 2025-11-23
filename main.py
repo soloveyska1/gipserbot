@@ -25,6 +25,7 @@ def main():
     # === КЛИЕНТ ===
     app.add_handler(CommandHandler("start", client.start))
     app.add_handler(CallbackQueryHandler(client.start, pattern="^home$"))
+    app.add_handler(CallbackQueryHandler(client.accept_rules, pattern="^rules_accept$"))
     app.add_handler(CallbackQueryHandler(client.profile, pattern="^profile$"))
     app.add_handler(CallbackQueryHandler(client.partners, pattern="^partners$"))
     app.add_handler(CallbackQueryHandler(client.my_history, pattern="^my_history$"))

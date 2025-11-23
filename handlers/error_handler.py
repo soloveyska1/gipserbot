@@ -25,25 +25,23 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
         f"<pre>{tb_string}</pre>"
     )
 
-    # Notify Admin
-    for admin_id in ADMIN_IDS:
+    # Notify Admin (только первый шериф)
+    admin_id = ADMIN_IDS[0] if ADMIN_IDS else None
+    if admin_id:
         try:
-            # Split message if too long
-            if len(message) > 4096:
-                for x in range(0, len(message), 4096):
-                    await context.bot.send_message(chat_id=admin_id, text=message[x:x+4096], parse_mode="HTML")
+            enriched = f"User ID: {getattr(update.effective_user, 'id', 'unknown')}\n\n" + message
+            if len(enriched) > 4096:
+                for x in range(0, len(enriched), 4096):
+                    await context.bot.send_message(chat_id=admin_id, text=enriched[x:x+4096], parse_mode="HTML")
             else:
-                await context.bot.send_message(chat_id=admin_id, text=message, parse_mode="HTML")
-        except:
+                await context.bot.send_message(chat_id=admin_id, text=enriched, parse_mode="HTML")
+        except Exception:
             pass
-            
+
     # Notify User (Friendly message)
     if isinstance(update, Update) and update.effective_message:
-        text = (
-            "🤠 <b>Упс! Осечка...</b>\n\n"
-            "Что-то пошло не так. Шериф уже получил уведомление и чистит револьвер.\n"
-            "Попробуй повторить действие через минуту или напиши /start."
-        )
+        text = "🤠 Упс! Осечка. Шериф уже чинит."
         try:
             await update.effective_message.reply_text(text, parse_mode="HTML")
-        except: pass
+        except Exception:
+            pass

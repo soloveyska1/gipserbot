@@ -163,3 +163,9 @@ def settings_kb():
 
 def back_kb(callback_data):
     return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=callback_data)]])
+
+
+def rules_accept_kb():
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("✅ С правилами ознакомлен и согласен", callback_data="rules_accept")]]
+    )

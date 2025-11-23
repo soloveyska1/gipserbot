@@ -11,6 +11,16 @@ async def chat_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await query.answer()
         print(f"DEBUG: chat_start triggered with data: {query.data}") # LOGGING
+
+        user = await db.get_user(query.from_user.id)
+        if not user or not user.get("agreed_to_rules"):
+            await context.bot.send_message(
+                chat_id=query.from_user.id,
+                text="📜 Прими Кодекс Чести, чтобы открыть двери чата.",
+                reply_markup=kb.rules_accept_kb(),
+                parse_mode="HTML",
+            )
+            return ConversationHandler.END
         
         data = query.data
         # adm_chat_OID or chat_order_OID

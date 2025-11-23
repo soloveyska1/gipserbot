@@ -12,8 +12,19 @@ TYPE, TOPIC, DEADLINE, UPSELL, CONFIRM = range(5)
 async def start_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    user = await db.get_user(query.from_user.id)
+    if not user or not user.get("agreed_to_rules"):
+        await context.bot.send_message(
+            chat_id=query.from_user.id,
+            text=(
+                "📜 Сначала ознакомься с Кодексом Чести салуна и подтверди согласие."
+            ),
+            reply_markup=kb.rules_accept_kb(),
+            parse_mode="HTML",
+        )
+        return ConversationHandler.END
     await query.edit_message_text(
-        "💼 <b>ШАГ 1/4: ОБЪЕКТ РАБОТЫ</b>\nВыберите тип задачи:", 
+        "💼 <b>ШАГ 1/4: ОБЪЕКТ РАБОТЫ</b>\nВыберите тип задачи:",
         reply_markup=kb.services_kb(), parse_mode="HTML"
     )
     return TYPE
