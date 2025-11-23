@@ -933,10 +933,7 @@ def setup(app):
     app.add_handler(CallbackQueryHandler(show_clients, pattern=r"^usr:list:"))
     app.add_handler(CallbackQueryHandler(show_client_profile, pattern=r"^usr:view:"))
     app.add_handler(CallbackQueryHandler(toggle_ban, pattern=r"^usr:ban:"))
-    app.add_handler(CallbackQueryHandler(start_note_edit, pattern=r"^usr:note:"))
-    app.add_handler(CallbackQueryHandler(start_dm, pattern=r"^usr:msg:"))
     app.add_handler(CallbackQueryHandler(show_user_orders, pattern=r"^usr:orders:"))
-    app.add_handler(CallbackQueryHandler(start_points_change, pattern=r"^usr:points_(add|sub):"))
 
     note_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(start_note_edit, pattern=r"^usr:note:")],

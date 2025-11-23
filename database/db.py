@@ -55,6 +55,40 @@ def _ensure_promo_tables():
     conn.close()
 
 
+def seed_services():
+    """Заполняет базовый каталог услуг с салун-неймингом для админки/расчётов."""
+    conn = _get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS services_catalog (
+            key TEXT PRIMARY KEY,
+            name TEXT,
+            price INTEGER,
+            description TEXT
+        )
+        """
+    )
+
+    services = [
+        ("master", "Магистерская (Собственное Ранчо)", 55000, "Полный эскорт до защиты, как за своим ранчо."),
+        ("diploma_gold", "Диплом (Золотая жила)", 35000, "Бережная добыча всех аргументов для блестящей защиты."),
+        ("course_poker", "Курсовая (Партия в покер)", 15000, "Ставим на выигрышную комбинацию: план, методичка, антиплагиат."),
+        ("essay_fling", "Эссе (Лёгкий флирт)", 5000, "Быстро, красиво и без лишних обязательств."),
+        ("report_family", "Отчёт (Семейный ужин)", 8000, "Произвести впечатление на комиссию, как на строгих родственников."),
+        ("exam_risk", "Экзамен (Игра с судьбой)", 4000, "Адреналин с гарантиями: готовим билеты и решения вовремя."),
+    ]
+
+    for key, name, price, desc in services:
+        cur.execute(
+            "INSERT OR REPLACE INTO services_catalog (key, name, price, description) VALUES (?, ?, ?, ?)",
+            (key, name, price, desc),
+        )
+
+    conn.commit()
+    conn.close()
+
+
 async def get_all_users_paginated(page: int, page_size: int = 10) -> List[Dict[str, Any]]:
     """Return a paginated slice of users with CRM fields for the admin list."""
     _ensure_user_columns()

@@ -22,6 +22,34 @@ def main():
     print("🚀 Запуск бота...")
     app = Application.builder().token(BOT_TOKEN).build()
 
+    # === АДМИНКА (регистрируем первой) ===
+    admin.setup(app)
+
+    # === ПРОМО (вторым) ===
+    promos.setup(app)
+
+    # === ОФОРМЛЕНИЕ ЗАКАЗА ===
+    order_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(order_flow.start_order, pattern="^order_start$")],
+        states={
+            order_flow.TYPE: [CallbackQueryHandler(order_flow.get_type, pattern="^srv_")],
+            order_flow.SERVICE_CARD: [CallbackQueryHandler(order_flow.confirm_service, pattern="^srv_confirm_|^srv_back$")],
+            order_flow.TOPIC: [
+                MessageHandler(filters.Document.ALL | filters.PHOTO | filters.TEXT & ~filters.COMMAND, order_flow.get_topic),
+                CallbackQueryHandler(order_flow.start_order, pattern="^back_to_type$")
+            ],
+            order_flow.DEADLINE: [CallbackQueryHandler(order_flow.get_deadline, pattern="^time_|^back_to_topic$")],
+            order_flow.UPSELL: [CallbackQueryHandler(order_flow.get_upsell, pattern="^toggle_|^upsell_done$|^back_to_deadline$")],
+            order_flow.PAY_CHOICE: [CallbackQueryHandler(order_flow.handle_payment_choice, pattern="^use_points_yes$|^use_points_no$")],
+            order_flow.CONFIRM: [CallbackQueryHandler(order_flow.confirm_order, pattern="^submit_order$|^home$")]
+        },
+        fallbacks=[
+            CallbackQueryHandler(client.start, pattern="^home$"),
+            CallbackQueryHandler(order_flow.start_order, pattern="^order_start$")
+        ]
+    )
+    app.add_handler(order_conv)
+
     # === КЛИЕНТ ===
     app.add_handler(CommandHandler("start", client.start))
     app.add_handler(CallbackQueryHandler(client.start, pattern="^home$"))
@@ -42,31 +70,6 @@ def main():
     )
     app.add_handler(review_conv)
 
-    # === ОФОРМЛЕНИЕ ЗАКАЗА ===
-    order_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(order_flow.start_order, pattern="^order_start$")],
-        states={
-            order_flow.TYPE: [CallbackQueryHandler(order_flow.get_type, pattern="^srv_")],
-            order_flow.TOPIC: [
-                MessageHandler(filters.Document.ALL | filters.PHOTO | filters.TEXT & ~filters.COMMAND, order_flow.get_topic),
-                CallbackQueryHandler(order_flow.start_order, pattern="^back_to_type$")
-            ],
-            order_flow.DEADLINE: [CallbackQueryHandler(order_flow.get_deadline, pattern="^time_|^back_to_topic$")],
-            order_flow.UPSELL: [CallbackQueryHandler(order_flow.get_upsell, pattern="^toggle_|^upsell_done$|^back_to_deadline$")],
-            order_flow.PAY_CHOICE: [CallbackQueryHandler(order_flow.handle_payment_choice, pattern="^use_points_yes$|^use_points_no$")],
-            order_flow.CONFIRM: [CallbackQueryHandler(order_flow.confirm_order, pattern="^submit_order$|^home$")]
-        },
-        fallbacks=[
-            CallbackQueryHandler(client.start, pattern="^home$"),
-            CallbackQueryHandler(order_flow.start_order, pattern="^order_start$")
-        ]
-    )
-    app.add_handler(order_conv)
-
-    # === АДМИНКА ===
-    admin.setup(app)
-    promos.setup(app)
-
     # === ЧАТ ===
     chat_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(chat.chat_start, pattern="^adm_chat_|^chat_order_|^ord:chat:")],
@@ -80,7 +83,7 @@ def main():
         fallbacks=[CallbackQueryHandler(chat.cancel_chat, pattern="^adm_order_|^my_order_|^chat_close$")]
     )
     app.add_handler(chat_conv)
-    
+
     app.add_error_handler(error_handler)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, client.handle_thanks))
 

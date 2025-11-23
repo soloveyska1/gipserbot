@@ -1,4 +1,4 @@
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes, ConversationHandler
 from database import core as db
@@ -8,7 +8,7 @@ from config import SERVICES, URGENCY_MULTIPLIER, ADMIN_IDS
 
 MSG_UPSELL = "🛡 <b>ДОПОЛНИТЕЛЬНАЯ ЗАЩИТА</b>\nХотите добавить броню к вашему заказу?"
 
-TYPE, TOPIC, DEADLINE, UPSELL, PAY_CHOICE, CONFIRM = range(6)
+TYPE, SERVICE_CARD, TOPIC, DEADLINE, UPSELL, PAY_CHOICE, CONFIRM = range(7)
 
 
 async def _safe_edit(query, text, **kwargs):
@@ -82,17 +82,61 @@ async def get_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     if query.data == "home": return ConversationHandler.END
-    
-    sType = query.data.split("_")[1]
-    context.user_data['o_type'] = sType
-    srv = SERVICES[sType]
-    
+    s_type = query.data.replace("srv_", "", 1)
+    if s_type not in SERVICES:
+        return TYPE
+
+    context.user_data['selected_service'] = s_type
+    srv = SERVICES[s_type]
+    price = await pricing.get_price(f"srv_{s_type}")
+    desc = srv.get('desc') or "Описание скоро будет"
+
+    card_txt = (
+        f"{srv.get('emoji', '🤠')} <b>{srv['name']}</b>\n"
+        f"{desc}\n\n"
+        f"💰 Базовая цена: {price} ₽\n"
+        f"↘️ Подтвердите выбор, чтобы перейти к деталям"
+    )
+
+    kb_card = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Подтвердить", callback_data=f"srv_confirm_{s_type}")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="srv_back")],
+    ])
+
+    await _safe_edit(query, card_txt, reply_markup=kb_card, parse_mode="HTML")
+    return SERVICE_CARD
+
+
+async def confirm_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data or ""
+
+    if data == "srv_back":
+        await _safe_edit(
+            query,
+            "💼 <b>ШАГ 1/4: ОБЪЕКТ РАБОТЫ</b>\nВыберите тип задачи:",
+            reply_markup=kb.services_kb(),
+            parse_mode="HTML",
+        )
+        return TYPE
+
+    if not data.startswith("srv_confirm_"):
+        return SERVICE_CARD
+
+    s_type = data.replace("srv_confirm_", "", 1)
+    if s_type not in SERVICES:
+        return TYPE
+
+    context.user_data['o_type'] = s_type
+    srv = SERVICES[s_type]
+
     await _safe_edit(
         query,
         f"✅ Выбрано: <b>{srv['name']}</b>\n\n"
         f"📝 <b>ШАГ 2/4: ТЕХНИЧЕСКОЕ ЗАДАНИЕ</b>\n"
         f"Напишите тему работы, прикрепите файл или перешлите сообщение преподавателя.",
-        parse_mode="HTML"
+        parse_mode="HTML",
     )
     return TOPIC
 
