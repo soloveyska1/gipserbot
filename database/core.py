@@ -63,6 +63,32 @@ def _ensure_user_columns(cursor):
         logging.info("[DB] Добавлен столбец joined_at в users и заполнен текущей датой")
 
 
+def _ensure_order_columns(cursor):
+    # Переименование старого order_type в service_type (или добавление зеркальной колонки)
+    has_order_type = _column_exists(cursor, "orders", "order_type")
+    has_service_type = _column_exists(cursor, "orders", "service_type")
+    if has_order_type and not has_service_type:
+        try:
+            cursor.execute("ALTER TABLE orders RENAME COLUMN order_type TO service_type")
+            logging.info("[DB] Переименован order_type в service_type")
+        except sqlite3.OperationalError:
+            # Если RENAME COLUMN недоступен (старая версия SQLite), добавляем колонку и копируем данные
+            _ensure_column(cursor, "orders", "service_type", "service_type TEXT")
+            cursor.execute(
+                "UPDATE orders SET service_type = order_type WHERE service_type IS NULL OR service_type = ''"
+            )
+            logging.info("[DB] Добавлена service_type и скопированы данные из order_type")
+    elif not has_service_type:
+        _ensure_column(cursor, "orders", "service_type", "service_type TEXT")
+
+    _ensure_column(cursor, "orders", "is_hidden_for_user", "is_hidden_for_user INTEGER DEFAULT 0")
+    _ensure_column(cursor, "orders", "referral_bonus_paid", "referral_bonus_paid INTEGER DEFAULT 0")
+    _ensure_column(cursor, "orders", "promo_code", "promo_code TEXT")
+    _ensure_column(cursor, "orders", "last_ping_time", "last_ping_time TIMESTAMP")
+    _ensure_column(cursor, "orders", "deadline_type", "deadline_type TEXT")
+    _ensure_column(cursor, "orders", "upsell", "upsell INTEGER DEFAULT 0")
+
+
 def init_db():
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
@@ -188,17 +214,7 @@ def init_db():
         )
 
         _ensure_user_columns(cursor)
-
-        if _column_exists(cursor, "orders", "order_type") and not _column_exists(cursor, "orders", "service_type"):
-            cursor.execute("ALTER TABLE orders RENAME COLUMN order_type TO service_type")
-            logging.info("[DB] Переименован order_type в service_type")
-
-        _ensure_column(cursor, "orders", "is_hidden_for_user", "is_hidden_for_user INTEGER DEFAULT 0")
-        _ensure_column(cursor, "orders", "referral_bonus_paid", "referral_bonus_paid INTEGER DEFAULT 0")
-        _ensure_column(cursor, "orders", "promo_code", "promo_code TEXT")
-        _ensure_column(cursor, "orders", "last_ping_time", "last_ping_time TIMESTAMP")
-        _ensure_column(cursor, "orders", "deadline_type", "deadline_type TEXT")
-        _ensure_column(cursor, "orders", "upsell", "upsell INTEGER DEFAULT 0")
+        _ensure_order_columns(cursor)
 
         cursor.execute(
             "INSERT OR IGNORE INTO settings (key, value) VALUES ('maintenance_mode', '0')"

@@ -8,6 +8,15 @@ MSG_UPSELL = "🛡 <b>ДОПОЛНИТЕЛЬНАЯ ЗАЩИТА</b>\nХотит�
 
 TYPE, TOPIC, DEADLINE, UPSELL, CONFIRM = range(5)
 
+
+async def _safe_edit(query, text, **kwargs):
+    msg = query.message
+    if msg and msg.text:
+        return await query.edit_message_text(text, **kwargs)
+    if msg and msg.caption:
+        return await query.edit_message_caption(caption=text, **kwargs)
+    return await query.message.reply_text(text, **kwargs)
+
 # 1. Выбор типа
 async def start_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -23,7 +32,8 @@ async def start_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML",
         )
         return ConversationHandler.END
-    await query.edit_message_text(
+    await _safe_edit(
+        query,
         "💼 <b>ШАГ 1/4: ОБЪЕКТ РАБОТЫ</b>\nВыберите тип задачи:",
         reply_markup=kb.services_kb(), parse_mode="HTML"
     )
@@ -39,7 +49,8 @@ async def get_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['o_type'] = sType
     srv = SERVICES[sType]
     
-    await query.edit_message_text(
+    await _safe_edit(
+        query,
         f"✅ Выбрано: <b>{srv['name']}</b>\n\n"
         f"📝 <b>ШАГ 2/4: ТЕХНИЧЕСКОЕ ЗАДАНИЕ</b>\n"
         f"Напишите тему работы, прикрепите файл или перешлите сообщение преподавателя.",
@@ -67,7 +78,7 @@ async def get_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if query.data == "back_to_topic":
         # Возврат назад не реализован для упрощения, просто просим тему заново
-        await query.edit_message_text("📝 Введите тему заново:")
+        await _safe_edit(query, "📝 Введите тему заново:")
         return TOPIC
 
     is_urgent = 1 if query.data == "time_urgent" else 0
@@ -78,9 +89,10 @@ async def get_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['upsell_pres'] = 0
     context.user_data['upsell_vip'] = 0
 
-    await query.edit_message_text(
-        MSG_UPSELL, 
-        reply_markup=kb.upsell_kb(0, 0, 0, PRICE_SPEECH, PRICE_PRES, PRICE_VIP), 
+    await _safe_edit(
+        query,
+        MSG_UPSELL,
+        reply_markup=kb.upsell_kb(0, 0, 0, PRICE_SPEECH, PRICE_PRES, PRICE_VIP),
         parse_mode="HTML"
     )
     return UPSELL
@@ -92,7 +104,7 @@ async def get_upsell(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     if data == "back_to_deadline":
-        await query.edit_message_text("⏳ Выберите срочность:", reply_markup=kb.deadline_kb(), parse_mode="HTML")
+        await _safe_edit(query, "⏳ Выберите срочность:", reply_markup=kb.deadline_kb(), parse_mode="HTML")
         return DEADLINE
 
     if data == "upsell_done":
@@ -133,7 +145,7 @@ async def get_upsell(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💰 <b>ИТОГО К ОПЛАТЕ: {price} ₽</b>\n\n"
             f"⚠️ <i>Нажимая «Подтвердить», вы отправляете заявку менеджеру. Оплата производится после согласования деталей.</i>"
         )
-        await query.edit_message_text(txt, reply_markup=kb.confirm_kb(), parse_mode="HTML")
+        await _safe_edit(query, txt, reply_markup=kb.confirm_kb(), parse_mode="HTML")
         return CONFIRM
 
     # Переключение галочек (Toggle)
@@ -160,7 +172,7 @@ async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d = context.user_data
     
     if query.data == "home":
-        await query.edit_message_text("❌ Отменено", reply_markup=kb.main_kb(user.id))
+        await _safe_edit(query, "❌ Отменено", reply_markup=kb.main_kb(user.id))
         return ConversationHandler.END
 
     # Сохраняем в БД
@@ -183,7 +195,8 @@ async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try: await context.bot.send_message(admin_id, adm_msg, parse_mode="HTML")
         except: pass
     
-    await query.edit_message_text(
+    await _safe_edit(
+        query,
         f"✅ <b>ЗАЯВКА #{oid} ПРИНЯТА В РАБОТУ</b>\n\n"
         f"Менеджер (Семён Юрьевич) получил уведомление. Ожидайте сообщения в ближайшее время.\n\n"
         f"<i>Совет: Пока ждете, можете скинуть ссылку другу и заработать на его заказе.</i>",

@@ -22,6 +22,15 @@ CODE_OF_HONOR = (
 )
 
 
+async def _safe_edit(query, text, **kwargs):
+    msg = query.message
+    if msg and msg.text:
+        return await query.edit_message_text(text, **kwargs)
+    if msg and msg.caption:
+        return await query.edit_message_caption(caption=text, **kwargs)
+    return await query.message.reply_text(text, **kwargs)
+
+
 async def _send_rules_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     await utils.send_typing(context, chat_id)
@@ -111,7 +120,7 @@ async def accept_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await db.update_user_field(query.from_user.id, "agreed_to_rules", 1)
     await utils.send_typing(context, query.message.chat_id)
     await asyncio.sleep(1.5)
-    await query.edit_message_text(
+    await _safe_edit(
         "🤝 Шериф записал твое согласие. Добро пожаловать в салун!",
         reply_markup=kb.main_kb(query.from_user.id),
         parse_mode="HTML",
@@ -134,7 +143,7 @@ async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💰 Баланс: <b>{u['balance']} ₽</b>\n"
         f"💸 Инвестировано в спокойствие: {u['total_spent']} ₽"
     )
-    await query.edit_message_text(txt, reply_markup=kb.profile_kb(), parse_mode="HTML")
+    await _safe_edit(query, txt, reply_markup=kb.profile_kb(), parse_mode="HTML")
 
 async def partners(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -151,7 +160,7 @@ async def partners(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"<code>{link}</code>\n\n"
         "<i>Раздай её в универе.</i>"
     )
-    await query.edit_message_text(text, reply_markup=kb.back_kb("home"), parse_mode="HTML")
+    await _safe_edit(query, text, reply_markup=kb.back_kb("home"), parse_mode="HTML")
 
 async def my_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -161,9 +170,9 @@ async def my_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     orders = await db.get_user_orders(query.from_user.id)
     if not orders:
-        await query.edit_message_text("📂 <b>Архив пуст.</b>", reply_markup=kb.profile_kb(), parse_mode="HTML")
+        await _safe_edit(query, "📂 <b>Архив пуст.</b>", reply_markup=kb.profile_kb(), parse_mode="HTML")
     else:
-        await query.edit_message_text("📂 <b>ВАШИ ДЕЛА:</b>", reply_markup=kb.history_kb(orders), parse_mode="HTML")
+        await _safe_edit(query, "📂 <b>ВАШИ ДЕЛА:</b>", reply_markup=kb.history_kb(orders), parse_mode="HTML")
 
 async def my_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -183,25 +192,26 @@ async def my_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📊 Статус: {status_map.get(o['status'], o['status'])}\n"
         f"📝 Тема: {o['topic']}"
     )
-    await query.edit_message_text(txt, reply_markup=kb.order_details_kb(oid, o['status']), parse_mode="HTML")
+    await _safe_edit(query, txt, reply_markup=kb.order_details_kb(oid, o['status']), parse_mode="HTML")
 
 async def my_transactions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     trans = await db.get_transactions(query.from_user.id)
     if not trans:
-        return await query.edit_message_text("💳 <b>Транзакций нет.</b>", reply_markup=kb.back_kb("profile"), parse_mode="HTML")
+        return await _safe_edit(query, "💳 <b>Транзакций нет.</b>", reply_markup=kb.back_kb("profile"), parse_mode="HTML")
     txt = "💳 <b>ИСТОРИЯ ОПЕРАЦИЙ:</b>\n\n"
     for t in trans:
         sign = "+" if t['amount'] > 0 else ""
         txt += f"📅 {t['date'][:16]}\n💴 <b>{sign}{t['amount']} ₽</b> ({t['reason']})\n\n"
-    await query.edit_message_text(txt, reply_markup=kb.back_kb("profile"), parse_mode="HTML")
+    await _safe_edit(query, txt, reply_markup=kb.back_kb("profile"), parse_mode="HTML")
 
 # --- ОТЗЫВЫ ---
 async def ask_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text(
+    await _safe_edit(
+        query,
         "✍️ <b>Напиши пару слов:</b>\n\nМы прибьем твой отзыв на доску почета (в канал) анонимно.\nКидай текст или скрин.",
         reply_markup=kb.back_kb("home"),
         parse_mode="HTML"
