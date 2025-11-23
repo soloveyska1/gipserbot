@@ -57,6 +57,7 @@ def main():
     app.add_handler(CallbackQueryHandler(client.start, pattern="^home$"))
     app.add_handler(CallbackQueryHandler(client.accept_rules, pattern="^rules_accept$"))
     app.add_handler(CallbackQueryHandler(client.profile, pattern="^profile$"))
+    app.add_handler(CallbackQueryHandler(client.profile, pattern="^open_profile$"))
     app.add_handler(CallbackQueryHandler(client.show_price_list, pattern="^price_list$"))
     app.add_handler(CallbackQueryHandler(client.back_to_main_menu, pattern="^back_to_main_menu$"))
     app.add_handler(CallbackQueryHandler(client.show_price_card, pattern="^price_srv_"))
@@ -74,7 +75,10 @@ def main():
         states={
             client.REVIEW_STATE: [MessageHandler(filters.TEXT | filters.PHOTO, client.submit_review)]
         },
-        fallbacks=[CallbackQueryHandler(client.cancel_review, pattern="^home$")]
+        fallbacks=[
+            CallbackQueryHandler(client.cancel_review, pattern="^home$"),
+            CallbackQueryHandler(client.cancel_review, pattern="^open_profile$"),
+        ]
     )
     app.add_handler(review_conv)
 

@@ -62,6 +62,34 @@ async def _safe_edit(query: CallbackQuery, text: str, **kwargs):
     return await query.message.reply_text(text, **kwargs)
 
 
+_RANKS = [
+    {"threshold": 0, "name": "🤠 Новичок", "next_threshold": 5000},
+    {"threshold": 5000, "name": "🎓 Профи", "next_threshold": 20000},
+    {"threshold": 20000, "name": "📚 Власть Академии", "next_threshold": None},
+]
+
+
+def _rank_progress(total_spent: int) -> tuple[str, int | None, int, str]:
+    current = _RANKS[0]
+    for rank in _RANKS:
+        if total_spent >= rank["threshold"]:
+            current = rank
+
+    next_threshold = current["next_threshold"]
+    if next_threshold is None:
+        progress_ratio = 1.0
+        amount_needed = 0
+    else:
+        span = next_threshold - current["threshold"]
+        progress_ratio = min(1.0, max(0.0, (total_spent - current["threshold"]) / span))
+        amount_needed = max(0, next_threshold - total_spent)
+
+    filled = min(10, max(0, int(round(progress_ratio * 10))))
+    progress_bar = f"[{'■' * filled}{'□' * (10 - filled)}]"
+
+    return current["name"], next_threshold, amount_needed, progress_bar
+
+
 async def _send_rules_prompt(update: Update, context: Any):
     chat_id = update.effective_chat.id
     await utils.send_typing(context, chat_id)
@@ -159,14 +187,6 @@ async def accept_rules(update: Update, context: Any):
     )
 
 
-def _get_rank(total_spent: int) -> str:
-    if total_spent >= 20000:
-        return "📚 Власть Академии"
-    if total_spent >= 5000:
-        return "🎓 Профи"
-    return "🤠 Новичок"
-
-
 async def profile(update: Update, context: Any):
     query = update.callback_query
     await query.answer()
@@ -178,14 +198,17 @@ async def profile(update: Update, context: Any):
     u = await db.get_user(query.from_user.id)
     if not u: return await start(update, context)
 
-    rank = _get_rank(u.get("total_spent", 0) or 0)
+    total_spent = u.get("total_spent", 0) or 0
+    rank_name, _, amount_needed, progress_bar = _rank_progress(total_spent)
 
     txt = (
         f"👤 <b>ЛИЧНОЕ ДЕЛО</b>\n"
-        f"🆔 ID: <code>{u['user_id']}</code>\n"
-        f"💰 Баланс: <b>{u['balance']} ₽</b>\n"
-        f"💸 Инвестировано в спокойствие: {u['total_spent']} ₽\n"
-        f"🏆 Ранг: {rank}"
+        f"🆔 ID: <code>{u['user_id']}</code>\n\n"
+        f"💰 <b>Золотой запас:</b> {u['balance']} RUB\n"
+        f"🏆 <b>Ранг:</b> {rank_name}\n"
+        f"📊 <b>Прогресс:</b> {progress_bar}\n"
+        f"До следующего звания: {amount_needed} RUB\n\n"
+        f"<i>Всего инвестировано в спокойствие: {total_spent} RUB</i>"
     )
     await _safe_edit(query, txt, reply_markup=kb.profile_kb(), parse_mode="HTML")
 
@@ -346,7 +369,7 @@ async def partners(update: Update, context: Any):
         f"<code>{link}</code>\n\n"
         "<i>Раздай её в универе.</i>"
     )
-    await _safe_edit(query, text, reply_markup=kb.back_kb("home"), parse_mode="HTML")
+    await _safe_edit(query, text, reply_markup=kb.back_kb("open_profile"), parse_mode="HTML")
 
 async def my_history(update: Update, context: Any):
     query = update.callback_query
@@ -410,7 +433,7 @@ async def ask_review(update: Update, context: Any):
     await _safe_edit(
         query,
         "✍️ <b>Напиши пару слов:</b>\n\nМы прибьем твой отзыв на доску почета (в канал) анонимно.\nКидай текст или скрин.",
-        reply_markup=kb.back_kb("home"),
+        reply_markup=kb.back_kb("open_profile"),
         parse_mode="HTML"
     )
     return REVIEW_STATE
@@ -422,7 +445,7 @@ async def cancel_review(update: Update, context: Any):
     query = update.callback_query
     if query:
         await query.answer()
-    await start(update, context)
+    await profile(update, context)
     return ConversationHandler.END
 
 async def submit_review(update: Update, context: Any):
