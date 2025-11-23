@@ -1,9 +1,8 @@
 import asyncio
 from typing import Any
-from types import SimpleNamespace
 
-from aiogram import Router, F, types
-from aiogram.fsm.context import FSMContext
+from telegram import Update, CallbackQuery
+from telegram.ext import ConversationHandler
 
 from database import core as db
 from database import db as catalog_db
@@ -11,9 +10,6 @@ from keyboards import client_kb as kb
 from keyboards import builders
 from config import REVIEW_CHANNEL_ID
 import utils  # Подключаем твои новые утилиты
-
-router = Router()
-ConversationHandler = SimpleNamespace(END=-1)
 
 # ТВОЯ НОВАЯ КАРТИНКА (САЛУН)
 WELCOME_PHOTO_ID = "AgACAgIAAxkBAAIRBGkf3jybt7UiWBtsS4itzUfhWvceAALIC2sb7NgAAUkgNJP7MzMPsAEAAwIAA3kAAzYE"
@@ -51,7 +47,7 @@ class _StateWrapper:
             pass
 
 
-async def _safe_edit(query, text, **kwargs):
+async def _safe_edit(query: CallbackQuery, text: str, **kwargs):
     msg = query.message
     try:
         if msg and msg.text:
@@ -66,7 +62,7 @@ async def _safe_edit(query, text, **kwargs):
     return await query.message.reply_text(text, **kwargs)
 
 
-async def _send_rules_prompt(update: types.Update, context: Any):
+async def _send_rules_prompt(update: Update, context: Any):
     chat_id = update.effective_chat.id
     await utils.send_typing(context, chat_id)
     await asyncio.sleep(1.5)
@@ -80,7 +76,7 @@ async def _send_rules_prompt(update: types.Update, context: Any):
     )
 
 
-async def _ensure_rules(update: types.Update, context: Any):
+async def _ensure_rules(update: Update, context: Any):
     user = await db.get_user(update.effective_user.id)
     if not user:
         return False
@@ -95,7 +91,7 @@ async def _ensure_rules(update: types.Update, context: Any):
         return False
     return True
 
-async def start(update: types.Update, context: Any):
+async def start(update: Update, context: Any):
     user = update.effective_user
 
     # Имитация живого общения (печатает...)
@@ -149,7 +145,7 @@ async def start(update: types.Update, context: Any):
         await _send_rules_prompt(update, context)
 
 
-async def accept_rules(update: types.Update, context: Any):
+async def accept_rules(update: Update, context: Any):
     query = update.callback_query
     await query.answer()
     await db.update_user_field(query.from_user.id, "agreed_to_rules", 1)
@@ -171,7 +167,7 @@ def _get_rank(total_spent: int) -> str:
     return "🤠 Новичок"
 
 
-async def profile(update: types.Update, context: Any):
+async def profile(update: Update, context: Any):
     query = update.callback_query
     await query.answer()
 
@@ -194,7 +190,7 @@ async def profile(update: types.Update, context: Any):
     await _safe_edit(query, txt, reply_markup=kb.profile_kb(), parse_mode="HTML")
 
 
-async def _render_price_menu(update: types.Update, context: Any, via_callback: bool = False):
+async def _render_price_menu(update: Update, context: Any, via_callback: bool = False):
     services = await catalog_db.get_all_services()
     if not services:
         if via_callback and update.callback_query:
@@ -223,7 +219,7 @@ async def _render_price_menu(update: types.Update, context: Any, via_callback: b
     return await update.message.reply_text(text, reply_markup=markup, parse_mode="HTML")
 
 
-async def show_price_list(update: types.Update, context: Any):
+async def show_price_list(update: Update, context: Any):
     query = update.callback_query
     await query.answer()
     allowed = await _ensure_rules(update, context)
@@ -272,14 +268,14 @@ async def show_price_list(update: types.Update, context: Any):
         )
 
 
-async def show_price_list_text(update: types.Update, context: Any):
+async def show_price_list_text(update: Update, context: Any):
     allowed = await _ensure_rules(update, context)
     if not allowed:
         return ConversationHandler.END
     return await _render_price_menu(update, context, via_callback=False)
 
 
-async def show_price_card(update: types.Update, context: Any):
+async def show_price_card(update: Update, context: Any):
     query = update.callback_query
     await query.answer()
     allowed = await _ensure_rules(update, context)
@@ -312,7 +308,7 @@ async def show_price_card(update: types.Update, context: Any):
         parse_mode="HTML",
     )
 
-async def partners(update: types.Update, context: Any):
+async def partners(update: Update, context: Any):
     query = update.callback_query
     await query.answer()
     allowed = await _ensure_rules(update, context)
@@ -329,7 +325,7 @@ async def partners(update: types.Update, context: Any):
     )
     await _safe_edit(query, text, reply_markup=kb.back_kb("home"), parse_mode="HTML")
 
-async def my_history(update: types.Update, context: Any):
+async def my_history(update: Update, context: Any):
     query = update.callback_query
     await query.answer()
     allowed = await _ensure_rules(update, context)
@@ -341,7 +337,7 @@ async def my_history(update: types.Update, context: Any):
     else:
         await _safe_edit(query, "📂 <b>ВАШИ ДЕЛА:</b>", reply_markup=kb.history_kb(orders), parse_mode="HTML")
 
-async def my_order(update: types.Update, context: Any):
+async def my_order(update: Update, context: Any):
     query = update.callback_query
     await query.answer()
     oid = int(query.data.split("_")[-1])
@@ -361,7 +357,7 @@ async def my_order(update: types.Update, context: Any):
     )
     await _safe_edit(query, txt, reply_markup=kb.order_details_kb(oid, o['status']), parse_mode="HTML")
 
-async def my_transactions(update: types.Update, context: Any):
+async def my_transactions(update: Update, context: Any):
     query = update.callback_query
     await query.answer()
     trans = await db.get_transactions(query.from_user.id)
@@ -374,7 +370,7 @@ async def my_transactions(update: types.Update, context: Any):
     await _safe_edit(query, txt, reply_markup=kb.back_kb("profile"), parse_mode="HTML")
 
 
-async def show_code_of_honor(update: types.Update, context: Any):
+async def show_code_of_honor(update: Update, context: Any):
     query = update.callback_query
     allowed = await _ensure_rules(update, context)
     if not allowed:
@@ -385,7 +381,7 @@ async def show_code_of_honor(update: types.Update, context: Any):
     return await update.message.reply_text(CODE_OF_HONOR, reply_markup=kb.back_kb("home"), parse_mode="HTML")
 
 # --- ОТЗЫВЫ ---
-async def ask_review(update: types.Update, context: Any):
+async def ask_review(update: Update, context: Any):
     query = update.callback_query
     await query.answer()
     await _safe_edit(
@@ -397,7 +393,7 @@ async def ask_review(update: types.Update, context: Any):
     return REVIEW_STATE
 
 
-async def cancel_review(update: types.Update, context: Any):
+async def cancel_review(update: Update, context: Any):
     state = _StateWrapper(context)
     await state.clear()
     query = update.callback_query
@@ -406,7 +402,7 @@ async def cancel_review(update: types.Update, context: Any):
     await start(update, context)
     return ConversationHandler.END
 
-async def submit_review(update: types.Update, context: Any):
+async def submit_review(update: Update, context: Any):
     user = update.effective_user
     text = update.message.caption if update.message.caption else update.message.text
     if not text: text = "Без текста"
@@ -438,7 +434,7 @@ async def submit_review(update: types.Update, context: Any):
     await state.clear()
     return ConversationHandler.END
 
-async def handle_thanks(update: types.Update, context: Any):
+async def handle_thanks(update: Update, context: Any):
     if not update.message or not update.message.text: return
     text = update.message.text.lower()
     keywords = ["спасибо", "спс", "благодарю", "thanks"]
