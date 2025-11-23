@@ -1,18 +1,23 @@
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InlineKeyboardBuilder
 from config import SERVICES, ADMIN_IDS
 
 # Клиентские клавиатуры вынесены отдельно, чтобы избежать конфликтов с админской частью
 
 
 def main_kb(user_id):
-    return InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton("🔥 СДЕЛАТЬ ЗАКАЗ", callback_data="order_start")],
-            [InlineKeyboardButton("📜 Меню (Цены)", callback_data="price_list"), InlineKeyboardButton("🤠 Мое Досье", callback_data="profile")],
-            [InlineKeyboardButton("⚖️ Кодекс Чести (Гарантии)", callback_data="code_honor"), InlineKeyboardButton("👀 Слухи (Отзывы)", url="https://t.me/+Cls1cEPgPcMyZDJi")],
-            [InlineKeyboardButton("⭐ Позвать Шерифа (Саппорт)", url=f"tg://user?id={ADMIN_IDS[0]}")],
-        ]
+    builder = InlineKeyboardBuilder()
+    builder.add(InlineKeyboardButton("🔥 СДЕЛАТЬ ЗАКАЗ", callback_data="order_start"))
+    builder.add(
+        InlineKeyboardButton("📜 Меню (Цены)", callback_data="price_list"),
+        InlineKeyboardButton("🤠 Мое Досье", callback_data="profile"),
     )
+    builder.add(InlineKeyboardButton("⚖️ Кодекс Чести (Гарантии)", callback_data="code_honor"))
+    builder.add(
+        InlineKeyboardButton("👀 Слухи (Отзывы)", url="https://t.me/+Cls1cEPgPcMyZDJi"),
+        InlineKeyboardButton("⭐ Позвать Шерифа (Саппорт)", url=f"tg://user?id={ADMIN_IDS[0]}"),
+    )
+    builder.adjust(1, 2, 1, 2)
+    return builder.as_markup()
 
 
 def services_kb():
