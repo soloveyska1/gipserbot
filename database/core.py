@@ -38,6 +38,12 @@ def _ensure_user_columns(cursor):
     _ensure_column(cursor, "users", "referrer_id", "referrer_id INTEGER DEFAULT 0")
     _ensure_column(cursor, "users", "is_alive", "is_alive INTEGER DEFAULT 1")
     _ensure_column(cursor, "users", "agreed_to_rules", "agreed_to_rules INTEGER DEFAULT 0")
+    _ensure_column(
+        cursor,
+        "users",
+        "joined_at",
+        "joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+    )
 
 
 def init_db():
