@@ -71,3 +71,28 @@ def create_dynamic_service_keyboard(
 
     rows.append([InlineKeyboardButton(back_text, callback_data=back_cb)])
     return InlineKeyboardMarkup(rows)
+
+
+def create_orders_history_keyboard(orders):
+    """Строит список заказов с иконками статусов и сервисами."""
+    status_icon = {
+        "new": "⏳",
+        "checking": "⏳",
+        "pending_pay": "⏳",
+        "paid": "⏳",
+        "work": "🤠",
+        "completed": "✅",
+        "done": "✅",
+        "cancel": "❌",
+        "canceled": "❌",
+        "cancelled": "❌",
+    }
+
+    rows = []
+    for order in orders:
+        icon = status_icon.get(order.get("status"), "?")
+        label = f"{icon} Заказ #{order['id']} | {order.get('service_type', 'Услуга')}"
+        rows.append([InlineKeyboardButton(label, callback_data=f"my_order_{order['id']}")])
+
+    rows.append([InlineKeyboardButton("🔙 Назад", callback_data="profile")])
+    return InlineKeyboardMarkup(rows)

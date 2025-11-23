@@ -381,27 +381,39 @@ async def my_history(update: Update, context: Any):
     if not orders:
         await _safe_edit(query, "📂 <b>Архив пуст.</b>", reply_markup=kb.profile_kb(), parse_mode="HTML")
     else:
-        await _safe_edit(query, "📂 <b>ВАШИ ДЕЛА:</b>", reply_markup=kb.history_kb(orders), parse_mode="HTML")
+        trimmed = orders[:5]
+        history_markup = builders.create_orders_history_keyboard(trimmed)
+        await _safe_edit(query, "📂 <b>ВАШИ ДЕЛА:</b>", reply_markup=history_markup, parse_mode="HTML")
 
 async def my_order(update: Update, context: Any):
     query = update.callback_query
     await query.answer()
     oid = int(query.data.split("_")[-1])
     o = await db.get_order(oid)
-    status_map = {
-        "checking": "🟡 На проверке",
-        "work": "⚙️ В работе",
-        "done": "✅ Готов",
+    status_label = {
+        "new": "⏳ Ждет шерифа",
+        "checking": "⏳ Ждет шерифа",
+        "pending_pay": "⏳ Ждет шерифа",
+        "paid": "⏳ Ждет шерифа",
+        "work": "🤠 В работе",
+        "completed": "✅ Выполнено",
+        "done": "✅ Выполнено",
         "cancel": "❌ Отмена",
-    }
+        "canceled": "❌ Отмена",
+        "cancelled": "❌ Отмена",
+    }.get(o.get("status"), o.get("status", "?"))
+
+    admin_comment = o.get("admin_comment") or o.get("comment") or "—"
+    price_value = o.get("final_price") or o.get("price") or 0
     txt = (
         f"📦 <b>ЗАКАЗ #{o['id']}</b>\n"
-        f"📚 Тип: {o['service_type']}\n"
-        f"💰 Цена: {o['price']} ₽\n"
-        f"📊 Статус: {status_map.get(o['status'], o['status'])}\n"
-        f"📝 Тема: {o['topic']}"
+        f"📚 Услуга: {o.get('service_type', 'Услуга')}\n"
+        f"💰 Цена: {price_value} ₽\n"
+        f"📊 Статус: {status_label}\n"
+        f"📝 Тема: {o.get('topic', '—')}\n"
+        f"💬 Комментарий шерифа: {admin_comment}"
     )
-    await _safe_edit(query, txt, reply_markup=kb.order_details_kb(oid, o['status']), parse_mode="HTML")
+    await _safe_edit(query, txt, reply_markup=kb.order_details_kb(oid, o.get('status')), parse_mode="HTML")
 
 async def my_transactions(update: Update, context: Any):
     query = update.callback_query
