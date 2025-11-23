@@ -1,5 +1,5 @@
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from config import ADMIN_ID, ORDER_TYPES
+from config import ADMIN_ID
 
 def main_menu(user_id):
     kb = [
@@ -7,13 +7,6 @@ def main_menu(user_id):
         [InlineKeyboardButton("👤 Мой сейф (Профиль)", callback_data="profile"), InlineKeyboardButton("💎 Партнерка", callback_data="partners")],
         [InlineKeyboardButton("💬 Отзывы", url="https://t.me/c/178428445/1"), InlineKeyboardButton("🆘 Саппорт", url=f"tg://user?id={ADMIN_ID}")],
     ]
-    return InlineKeyboardMarkup(kb)
-
-def type_selector():
-    kb = []
-    for k, v in ORDER_TYPES.items():
-        kb.append([InlineKeyboardButton(f"{v['icon']} {v['name']}", callback_data=f"type_{k}")])
-    kb.append([InlineKeyboardButton("🔙 Отмена", callback_data="home")])
     return InlineKeyboardMarkup(kb)
 
 def deadline_selector():
