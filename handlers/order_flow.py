@@ -19,8 +19,7 @@ INTRO_TEXT = (
 
 CONSULT_PROMPT = (
     "🤠 <b>Спокойно, партнер.</b>\n"
-    "Запутался в картах? Не беда.\n\n"
-    "Напиши ниже, что нужно сделать (или просто скинь методичку), и Шериф сам подберет вариант."
+    "Не нашел нужный калибр? Опиши задачу ниже (можно голосовым или текстом), и Шериф сам подберет вариант."
 )
 
 TYPE, SERVICE_CARD, TOPIC, DEADLINE, UPSELL, PAY_CHOICE, CONFIRM, CONSULT = range(8)
@@ -107,9 +106,13 @@ async def start_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def get_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    if query.data == "home": return ConversationHandler.END
-    if query.data == "order_consult":
-        await _safe_edit(query, CONSULT_PROMPT, parse_mode="HTML")
+    if query.data == "home":
+        return ConversationHandler.END
+    if query.data in {"order_consult", "consultation_request"}:
+        kb_cancel = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("🔙 Отмена", callback_data="consult_cancel")]]
+        )
+        await _safe_edit(query, CONSULT_PROMPT, reply_markup=kb_cancel, parse_mode="HTML")
         return CONSULT
     data = query.data or ""
     if not data.startswith("srv_"):
@@ -225,7 +228,23 @@ async def handle_consultation_request(update: Update, context: ContextTypes.DEFA
         except Exception:
             pass
 
-    await message.reply_text("Принято. Жди сигнала.", reply_markup=kb.main_kb(user.id))
+    await message.reply_text(
+        "✅ Сообщение ушло Шерифу. Скоро свяжемся.",
+        reply_markup=kb.main_kb(user.id),
+        parse_mode="HTML",
+    )
+    return ConversationHandler.END
+
+
+async def cancel_consultation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await _safe_edit(
+        query,
+        "🚫 Отмена. Возвращаю в главное меню.",
+        reply_markup=kb.main_kb(query.from_user.id),
+        parse_mode="HTML",
+    )
     return ConversationHandler.END
 
 # 4. Апселл (Допродажа)
@@ -409,9 +428,11 @@ async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await _safe_edit(
         query,
-        f"✅ <b>ЗАЯВКА #{oid} ПРИНЯТА В РАБОТУ</b>\n\n"
-        f"Менеджер (Семён Юрьевич) получил уведомление. Ожидайте сообщения в ближайшее время.\n\n"
-        f"<i>Совет: Пока ждете, можете скинуть ссылку другу и заработать на его заказе.</i>",
+        f"✅ <b>ЗАКАЗ #{oid} ПРИНЯТ!</b>\n\n"
+        "Шериф уже изучает твое дело.\n"
+        "⏳ <b>Что дальше?</b>\n"
+        "В течение 15-30 минут тебе напишет менеджер, уточнит детали и назовет точную цену.\n\n"
+        "<i>Держи револьвер сухим, а личку открытой.</i>",
         parse_mode="HTML",
     )
     return ConversationHandler.END

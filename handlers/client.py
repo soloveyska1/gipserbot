@@ -14,8 +14,9 @@ import utils  # Подключаем твои новые утилиты
 # ТВОЯ НОВАЯ КАРТИНКА (САЛУН)
 WELCOME_PHOTO_ID = "AgACAgIAAxkBAAIRBGkf3jybt7UiWBtsS4itzUfhWvceAALIC2sb7NgAAUkgNJP7MzMPsAEAAwIAA3kAAzYE"
 
-# Состояние для отзыва
+# Состояния диалогов
 REVIEW_STATE = 1
+PROMO_STATE = 2
 
 CODE_OF_HONOR = (
     "⚖️ <b>КОДЕКС ЧЕСТИ САЛУНА</b>\n\n"
@@ -211,6 +212,50 @@ async def profile(update: Update, context: Any):
         f"<i>Всего инвестировано в спокойствие: {total_spent} RUB</i>"
     )
     await _safe_edit(query, txt, reply_markup=kb.profile_kb(), parse_mode="HTML")
+
+
+async def ask_promo_code(update: Update, context: Any):
+    query = update.callback_query
+    await query.answer()
+
+    allowed = await _ensure_rules(update, context)
+    if not allowed:
+        return ConversationHandler.END
+
+    prompt = (
+        "🎟 <b>Есть промокод?</b>\n"
+        "Введи его ниже, чтобы пополнить баланс салуна."
+    )
+    await _safe_edit(query, prompt, reply_markup=kb.back_kb("open_profile"), parse_mode="HTML")
+    return PROMO_STATE
+
+
+async def submit_promo_code(update: Update, context: Any):
+    user = update.effective_user
+    code = (update.message.text or "").strip()
+    if not code:
+        await update.message.reply_text(
+            "Введите текст промокода, партнер.",
+            reply_markup=kb.back_kb("open_profile"),
+            parse_mode="HTML",
+        )
+        return PROMO_STATE
+
+    promo = await catalog_db.apply_promo_to_user(user.id, code)
+    if not promo:
+        await update.message.reply_text(
+            "❌ Промокод не найден, истек или уже использован.",
+            reply_markup=kb.back_kb("open_profile"),
+            parse_mode="HTML",
+        )
+        return PROMO_STATE
+
+    await update.message.reply_text(
+        "💰 Промокод принят! Твой баланс пополнен.",
+        reply_markup=kb.profile_kb(),
+        parse_mode="HTML",
+    )
+    return ConversationHandler.END
 
 
 async def _render_price_menu(update: Update, context: Any, via_callback: bool = False):

@@ -97,7 +97,7 @@ def create_dynamic_service_keyboard(
         rows.append(row)
 
     rows.append(
-        [InlineKeyboardButton("🆘 Не знаю, что выбрать (Спросить)", callback_data="order_consult")]
+        [InlineKeyboardButton("🆘 Не знаю, что выбрать (Спросить)", callback_data="consultation_request")]
     )
     rows.append([InlineKeyboardButton(back_text, callback_data=back_cb)])
     return InlineKeyboardMarkup(rows)

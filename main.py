@@ -34,7 +34,11 @@ def main():
     order_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(order_flow.start_order, pattern="^order_start$")],
         states={
-            order_flow.TYPE: [CallbackQueryHandler(order_flow.get_type, pattern="^srv_|^order_consult$")],
+            order_flow.TYPE: [
+                CallbackQueryHandler(order_flow.get_type, pattern="^srv_"),
+                CallbackQueryHandler(order_flow.get_type, pattern="^consultation_request$"),
+                CallbackQueryHandler(order_flow.get_type, pattern="^order_consult$")
+            ],
             order_flow.SERVICE_CARD: [CallbackQueryHandler(order_flow.confirm_service, pattern="^srv_confirm_|^srv_back$")],
             order_flow.TOPIC: [
                 MessageHandler(filters.Document.ALL | filters.PHOTO | filters.TEXT & ~filters.COMMAND, order_flow.get_topic),
@@ -45,10 +49,11 @@ def main():
             order_flow.PAY_CHOICE: [CallbackQueryHandler(order_flow.handle_payment_choice, pattern="^use_points_yes$|^use_points_no$")],
             order_flow.CONFIRM: [CallbackQueryHandler(order_flow.confirm_order, pattern="^submit_order$|^home$")],
             order_flow.CONSULT: [
+                CallbackQueryHandler(order_flow.cancel_consultation, pattern="^consult_cancel$"),
                 MessageHandler(
                     filters.Document.ALL | filters.PHOTO | filters.TEXT & ~filters.COMMAND,
                     order_flow.handle_consultation_request,
-                )
+                ),
             ],
         },
         fallbacks=[
@@ -87,6 +92,23 @@ def main():
         ]
     )
     app.add_handler(review_conv)
+
+    promo_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(client.ask_promo_code, pattern="^enter_promo$")],
+        states={
+            client.PROMO_STATE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, client.submit_promo_code),
+                CallbackQueryHandler(client.profile, pattern="^open_profile$"),
+                CallbackQueryHandler(client.start, pattern="^home$"),
+            ]
+        },
+        fallbacks=[
+            CallbackQueryHandler(client.profile, pattern="^open_profile$"),
+            CallbackQueryHandler(client.start, pattern="^home$"),
+        ],
+        allow_reentry=True,
+    )
+    app.add_handler(promo_conv)
 
     # === ЧАТ ===
     chat_conv = ConversationHandler(
