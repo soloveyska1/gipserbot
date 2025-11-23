@@ -210,9 +210,14 @@ async def _render_price_menu(update: Update, context: ContextTypes.DEFAULT_TYPE,
     )
 
     if via_callback and update.callback_query:
-        return await _safe_edit(
-            update.callback_query, text, reply_markup=markup, parse_mode="HTML"
-        )
+        try:
+            return await update.callback_query.message.edit_text(
+                text, reply_markup=markup, parse_mode="HTML"
+            )
+        except BadRequest:
+            return await _safe_edit(
+                update.callback_query, text, reply_markup=markup, parse_mode="HTML"
+            )
     return await update.message.reply_text(text, reply_markup=markup, parse_mode="HTML")
 
 
