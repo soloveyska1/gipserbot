@@ -259,9 +259,9 @@ async def show_price_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
     desc = srv.get("description") or "Описание готовится"
     price = srv.get("price", 0)
     txt = (
-        f"🤠 <b>{srv.get('name')}</b>\n"
+        f"🤠 <b>{srv.get('name')}</b>\n\n"
         f"{desc}\n\n"
-        f"💰 Цена: {price} ₽"
+        f"💰 <b>Цена:</b> {price} RUB"
     )
     return await _safe_edit(
         query,
