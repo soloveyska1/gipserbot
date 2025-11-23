@@ -210,8 +210,8 @@ async def start_note_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if query:
         await query.answer()
-    context.user_data["note_user"] = cb.id
-    context.user_data["note_page"] = cb.page
+    context.user_data["target_user_id"] = cb.id
+    context.user_data["target_page"] = cb.page
     cancel_cb = UserCallback(action="view", id=cb.id, page=cb.page).pack()
     await _safe_edit(
         query,
@@ -221,16 +221,16 @@ async def start_note_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return NOTE_STATE
 
 
-async def save_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def process_note_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Сохраняет админскую заметку и возвращает в профиль."""
     if not _is_admin(update.effective_user.id):
         return ConversationHandler.END
-    target = context.user_data.get("note_user")
-    page = context.user_data.get("note_page", 0)
+    target = context.user_data.get("target_user_id")
+    page = context.user_data.get("target_page", 0)
     if not target:
         await update.message.reply_text("❌ Нет выбранного пользователя")
         return ConversationHandler.END
-    text = update.message.text or ""
-    await crm_db.update_admin_note(target, text)
+    await crm_db.update_admin_note(target, update.message.text or "")
     await update.message.reply_text("✅ Заметка сохранена")
     state = _StateWrapper(context)
     await state.clear()
@@ -254,8 +254,8 @@ async def start_dm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if query:
         await query.answer()
-    context.user_data["dm_user"] = cb.id
-    context.user_data["dm_page"] = cb.page
+    context.user_data["target_user_id"] = cb.id
+    context.user_data["target_page"] = cb.page
     cancel_cb = UserCallback(action="view", id=cb.id, page=cb.page).pack()
     await _safe_edit(
         query,
@@ -265,31 +265,26 @@ async def start_dm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return DM_STATE
 
 
-async def send_dm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def process_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отправляет личное сообщение и возвращает к профилю."""
     if not _is_admin(update.effective_user.id):
         return ConversationHandler.END
-    target = context.user_data.get("dm_user")
-    page = context.user_data.get("dm_page", 0)
+    target = context.user_data.get("target_user_id")
+    page = context.user_data.get("target_page", 0)
     if not target:
         await update.message.reply_text("❌ Нет выбранного пользователя")
         return ConversationHandler.END
-    text = update.message.text or ""
+
     reply_btn = InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    "↩️ Ответить",
-                    callback_data=UserCallback(action="reply", id=update.effective_user.id, page=0).pack(),
-                )
-            ]
-        ]
+        [[InlineKeyboardButton("↩️ Ответить", callback_data=UserCallback(action="reply", id=update.effective_user.id, page=0).pack())]]
     )
     try:
-        await context.bot.send_message(target, f"✉️ Сообщение от Шерифа:\n{text}", reply_markup=reply_btn)
+        await context.bot.send_message(target, f"✉️ Сообщение от Шерифа:\n{update.message.text}", reply_markup=reply_btn)
     except Exception:
         await update.message.reply_text("⚠️ Не удалось доставить сообщение")
     else:
-        await update.message.reply_text("✅ Отправлено")
+        await update.message.reply_text("✅ Сообщение отправлено")
+
     state = _StateWrapper(context)
     await state.clear()
     await show_client_profile(update, context, user_id=target, page=page)
@@ -312,9 +307,9 @@ async def start_points_change(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query
     if query:
         await query.answer()
-    context.user_data["client_balance_target"] = cb.id
-    context.user_data["client_balance_page"] = cb.page
-    context.user_data["client_balance_dir"] = "add" if cb.action == "points_add" else "sub"
+    context.user_data["target_user_id"] = cb.id
+    context.user_data["target_page"] = cb.page
+    context.user_data["points_action"] = "add" if cb.action == "points_add" else "remove"
     cancel_cb = UserCallback(action="view", id=cb.id, page=cb.page).pack()
     prompt = "💎 Введите количество баллов для начисления:" if cb.action == "points_add" else "💎 Введите количество баллов для списания:"
     await _safe_edit(
@@ -325,13 +320,14 @@ async def start_points_change(update: Update, context: ContextTypes.DEFAULT_TYPE
     return CLIENT_BALANCE_STATE
 
 
-async def save_points_change(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def process_balance_change(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает ввод баллов и обновляет баланс."""
     if not _is_admin(update.effective_user.id):
         return ConversationHandler.END
-    target = context.user_data.get("client_balance_target")
-    page = context.user_data.get("client_balance_page", 0)
-    direction = context.user_data.get("client_balance_dir")
-    if not target or direction not in {"add", "sub"}:
+    target = context.user_data.get("target_user_id")
+    page = context.user_data.get("target_page", 0)
+    action = context.user_data.get("points_action")
+    if not target or action not in {"add", "remove"}:
         await update.message.reply_text("❌ Нет выбранного пользователя")
         return ConversationHandler.END
     try:
@@ -339,9 +335,15 @@ async def save_points_change(update: Update, context: ContextTypes.DEFAULT_TYPE)
     except ValueError:
         await update.message.reply_text("❌ Введите число")
         return CLIENT_BALANCE_STATE
-    delta = amount if direction == "add" else -amount
+
+    delta = amount if action == "add" else -abs(amount)
     await db.adjust_balance(target, delta, "Админ коррекция")
-    await update.message.reply_text(f"✅ Баланс изменён на {delta}")
+    fresh_user = await crm_db.get_user_admin_profile(target) or {}
+    new_balance = fresh_user.get("balance", 0)
+    await update.message.reply_text(f"✅ Баланс обновлён! Новый баланс: {new_balance} 💎")
+
+    state = _StateWrapper(context)
+    await state.clear()
     await show_client_profile(update, context, user_id=target, page=page)
     return ConversationHandler.END
 
@@ -940,7 +942,7 @@ def setup(app):
         entry_points=[CallbackQueryHandler(start_note_edit, pattern=r"^usr:note:")],
         states={
             NOTE_STATE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, save_note),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_note_message),
                 CallbackQueryHandler(cancel_note, pattern=r"^usr:view:"),
             ]
         },
@@ -953,7 +955,7 @@ def setup(app):
         entry_points=[CallbackQueryHandler(start_dm, pattern=r"^usr:msg:")],
         states={
             DM_STATE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, send_dm),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_dm_message),
                 CallbackQueryHandler(cancel_dm, pattern=r"^usr:view:"),
             ]
         },
@@ -966,7 +968,7 @@ def setup(app):
         entry_points=[CallbackQueryHandler(start_points_change, pattern=r"^usr:points_(add|sub):")],
         states={
             CLIENT_BALANCE_STATE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, save_points_change),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_balance_change),
                 CallbackQueryHandler(cancel_points_change, pattern=r"^usr:view:"),
             ]
         },
