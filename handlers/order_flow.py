@@ -2,9 +2,11 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes, ConversationHandler
 from database import core as db
+from database import db as catalog_db
 from database import pricing as pricing
 from keyboards import menu as kb
-from config import SERVICES, URGENCY_MULTIPLIER, ADMIN_IDS
+from keyboards import builders
+from config import URGENCY_MULTIPLIER, ADMIN_IDS
 
 MSG_UPSELL = "🛡 <b>ДОПОЛНИТЕЛЬНАЯ ЗАЩИТА</b>\nХотите добавить броню к вашему заказу?"
 
@@ -33,7 +35,7 @@ def _calc_points_offer(price: int, balance: int):
 
 async def _show_confirm(query, context):
     d = context.user_data
-    srv_name = SERVICES[d['o_type']]['name']
+    srv_name = d.get('o_service_name', d.get('o_type', 'Услуга'))
     urg_txt = "⚡️ СРОЧНО" if d.get('o_urgent') else "📅 Стандарт"
     extra_txt = ", ".join(d.get('o_extras', [])) if d.get('o_extras') else "Нет"
     original_price = d.get('original_price', d.get('o_price', 0))
@@ -70,10 +72,18 @@ async def start_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML",
         )
         return ConversationHandler.END
+    services = await catalog_db.get_all_services()
+    if not services:
+        await _safe_edit(
+            query,
+            "⚠️ Технический перерыв: список услуг пуст. Сообщите шерифу.",
+        )
+        return ConversationHandler.END
+
     await _safe_edit(
         query,
         "💼 <b>ШАГ 1/4: ОБЪЕКТ РАБОТЫ</b>\nВыберите тип задачи:",
-        reply_markup=kb.services_kb(), parse_mode="HTML"
+        reply_markup=builders.create_dynamic_service_keyboard(services), parse_mode="HTML"
     )
     return TYPE
 
@@ -82,14 +92,25 @@ async def get_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     if query.data == "home": return ConversationHandler.END
-    s_type = query.data.replace("srv_", "", 1)
-    if s_type not in SERVICES:
+    data = query.data or ""
+    if not data.startswith("srv_"):
         return TYPE
 
-    context.user_data['selected_service'] = s_type
-    srv = SERVICES[s_type]
-    price = await pricing.get_price(f"srv_{s_type}")
-    desc = srv.get('desc') or "Описание скоро будет"
+    try:
+        service_id = int(data.replace("srv_", "", 1))
+    except ValueError:
+        return TYPE
+
+    srv = await catalog_db.get_service(service_id)
+    if not srv:
+        return TYPE
+
+    context.user_data['selected_service'] = service_id
+    context.user_data['o_service_id'] = service_id
+    context.user_data['o_service_name'] = srv.get('name')
+    context.user_data['o_base_price'] = srv.get('price', 0)
+    desc = srv.get('description') or "Описание скоро будет"
+    price = srv.get('price', 0)
 
     card_txt = (
         f"{srv.get('emoji', '🤠')} <b>{srv['name']}</b>\n"
@@ -99,7 +120,7 @@ async def get_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     kb_card = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Подтвердить", callback_data=f"srv_confirm_{s_type}")],
+        [InlineKeyboardButton("✅ Подтвердить", callback_data=f"srv_confirm_{service_id}")],
         [InlineKeyboardButton("🔙 Назад", callback_data="srv_back")],
     ])
 
@@ -113,10 +134,14 @@ async def confirm_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data or ""
 
     if data == "srv_back":
+        services = await catalog_db.get_all_services()
+        if not services:
+            await _safe_edit(query, "⚠️ Технический перерыв: список услуг пуст.")
+            return ConversationHandler.END
         await _safe_edit(
             query,
             "💼 <b>ШАГ 1/4: ОБЪЕКТ РАБОТЫ</b>\nВыберите тип задачи:",
-            reply_markup=kb.services_kb(),
+            reply_markup=builders.create_dynamic_service_keyboard(services),
             parse_mode="HTML",
         )
         return TYPE
@@ -124,12 +149,19 @@ async def confirm_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not data.startswith("srv_confirm_"):
         return SERVICE_CARD
 
-    s_type = data.replace("srv_confirm_", "", 1)
-    if s_type not in SERVICES:
+    try:
+        service_id = int(data.replace("srv_confirm_", "", 1))
+    except ValueError:
         return TYPE
 
-    context.user_data['o_type'] = s_type
-    srv = SERVICES[s_type]
+    srv = await catalog_db.get_service(service_id)
+    if not srv:
+        return TYPE
+
+    context.user_data['o_type'] = srv.get('name')
+    context.user_data['o_service_id'] = service_id
+    context.user_data['o_service_name'] = srv.get('name')
+    context.user_data['o_base_price'] = srv.get('price', 0)
 
     await _safe_edit(
         query,
@@ -199,7 +231,7 @@ async def get_upsell(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "upsell_done":
         # КАЛЬКУЛЯТОР
         d = context.user_data
-        base = await pricing.get_price(f"srv_{d['o_type']}")
+        base = d.get('o_base_price') or 0
         
         # Наценки
         price = base

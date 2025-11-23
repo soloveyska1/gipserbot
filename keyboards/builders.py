@@ -39,3 +39,14 @@ def admin_dashboard():
         [InlineKeyboardButton("🔙 Выход", callback_data="home")]
     ]
     return InlineKeyboardMarkup(kb)
+
+
+def create_dynamic_service_keyboard(services):
+    """Собирает клавиатуру услуг из актуальных данных БД."""
+    rows = []
+    for srv in services:
+        rows.append(
+            [InlineKeyboardButton(f"{srv.get('name', 'Услуга')} — {srv.get('price', 0)}₽", callback_data=f"srv_{srv['id']}")]
+        )
+    rows.append([InlineKeyboardButton("🔙 В меню", callback_data="home")])
+    return InlineKeyboardMarkup(rows)

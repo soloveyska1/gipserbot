@@ -113,6 +113,11 @@ async def get_services() -> List[Dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+# Alias to emphasize full fetch for UI flows (e.g., клиентский заказ)
+async def get_all_services() -> List[Dict[str, Any]]:
+    return await get_services()
+
+
 async def get_service(service_id: int) -> Dict[str, Any] | None:
     _ensure_services_table()
     conn = _get_conn()
