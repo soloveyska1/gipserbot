@@ -64,6 +64,97 @@ def _ensure_user_columns(cursor):
 
 
 def _ensure_order_columns(cursor):
+    cursor.execute("PRAGMA table_info(orders)")
+    columns = {row[1] for row in cursor.fetchall()}
+
+    required_base = {
+        "id",
+        "user_id",
+        "service_type",
+        "topic",
+        "deadline",
+        "status",
+        "price",
+        "files",
+        "speech",
+        "pres",
+        "vip",
+        "is_visible",
+        "created_at",
+    }
+
+    def rebuild_orders_table():
+        logging.info("[DB] Перестраиваем таблицу orders до актуальной схемы")
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS orders_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                service_type TEXT,
+                topic TEXT,
+                deadline TEXT,
+                status TEXT DEFAULT 'checking',
+                price INTEGER DEFAULT 0,
+                files TEXT,
+                speech INTEGER DEFAULT 0,
+                pres INTEGER DEFAULT 0,
+                vip INTEGER DEFAULT 0,
+                is_visible INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                is_hidden_for_user INTEGER DEFAULT 0,
+                referral_bonus_paid INTEGER DEFAULT 0,
+                promo_code TEXT,
+                last_ping_time TIMESTAMP,
+                deadline_type TEXT,
+                upsell INTEGER DEFAULT 0
+            )
+            """
+        )
+
+        cursor.execute("PRAGMA table_info(orders)")
+        current = {row[1] for row in cursor.fetchall()}
+
+        def col_or_default(col, default_expr, fallback=None):
+            if col in current:
+                return col
+            if fallback and fallback in current:
+                return fallback
+            return default_expr
+
+        select_exprs = [
+            col_or_default("id", "NULL"),
+            col_or_default("user_id", "0"),
+            col_or_default("service_type", "''", fallback="order_type"),
+            col_or_default("topic", "''"),
+            col_or_default("deadline", "''"),
+            col_or_default("status", "'checking'"),
+            col_or_default("price", "0"),
+            col_or_default("files", "''"),
+            col_or_default("speech", "0"),
+            col_or_default("pres", "0"),
+            col_or_default("vip", "0"),
+            col_or_default("is_visible", "1"),
+            col_or_default("created_at", "CURRENT_TIMESTAMP"),
+            col_or_default("is_hidden_for_user", "0"),
+            col_or_default("referral_bonus_paid", "0"),
+            col_or_default("promo_code", "NULL"),
+            col_or_default("last_ping_time", "NULL"),
+            col_or_default("deadline_type", "NULL"),
+            col_or_default("upsell", "0"),
+        ]
+
+        cursor.execute(
+            f"INSERT INTO orders_new SELECT {', '.join(select_exprs)} FROM orders"
+        )
+        cursor.execute("DROP TABLE orders")
+        cursor.execute("ALTER TABLE orders_new RENAME TO orders")
+        logging.info("[DB] Таблица orders перестроена")
+
+    if not required_base.issubset(columns):
+        rebuild_orders_table()
+        cursor.execute("PRAGMA table_info(orders)")
+        columns = {row[1] for row in cursor.fetchall()}
+
     # Переименование старого order_type в service_type (или добавление зеркальной колонки)
     has_order_type = _column_exists(cursor, "orders", "order_type")
     has_service_type = _column_exists(cursor, "orders", "service_type")
