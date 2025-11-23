@@ -3,6 +3,7 @@ import os
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ConversationHandler
 from config import BOT_TOKEN, LOGS_DIR
 from database.core import init_db
+from database import db as catalog_db
 from handlers import client, order_flow, chat, admin, promos
 from handlers.error_handler import error_handler
 
@@ -18,6 +19,7 @@ logging.basicConfig(
 def main():
     print("🔌 Подключаем базу данных...")
     init_db()
+    catalog_db.seed_services()
     
     print("🚀 Запуск бота...")
     app = Application.builder().token(BOT_TOKEN).build()
