@@ -1,6 +1,14 @@
 import logging
 import os
+import sys
+from pathlib import Path
+
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ConversationHandler
+
+BASE_DIR = Path(__file__).resolve().parent
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
+
 from config import BOT_TOKEN, LOGS_DIR
 from database.core import init_db
 from database import db as catalog_db
