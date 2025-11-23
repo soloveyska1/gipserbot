@@ -1,6 +1,7 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes, ConversationHandler
+
 from database import core as db
 from database import db as catalog_db
 from database import pricing as pricing
@@ -10,7 +11,40 @@ from config import URGENCY_MULTIPLIER, ADMIN_IDS
 
 MSG_UPSELL = "🛡 <b>ДОПОЛНИТЕЛЬНАЯ ЗАЩИТА</b>\nХотите добавить броню к вашему заказу?"
 
-TYPE, SERVICE_CARD, TOPIC, DEADLINE, UPSELL, PAY_CHOICE, CONFIRM = range(7)
+INTRO_TEXT = (
+    "💼 <b>ШАГ 1/4: ВЫБОР ЦЕЛИ</b>\n\n"
+    "Партнер, время — деньги.\n"
+    "Выбери задачу, которую нужно решить, и мы добудем результат, пока ты отдыхаешь.\n\n"
+    "👇 <b>Жми на карту:</b>"
+)
+
+CONSULT_PROMPT = (
+    "🤠 <b>Спокойно, партнер.</b>\n"
+    "Не нашел нужный калибр? Опиши задачу ниже (можно голосовым или текстом), и Шериф сам подберет вариант."
+)
+
+TYPE, SERVICE_CARD, TOPIC, DEADLINE, UPSELL, PAY_CHOICE, CONFIRM, CONSULT = range(8)
+
+__all__ = [
+    "TYPE",
+    "SERVICE_CARD",
+    "TOPIC",
+    "DEADLINE",
+    "UPSELL",
+    "PAY_CHOICE",
+    "CONFIRM",
+    "CONSULT",
+    "start_order",
+    "get_type",
+    "confirm_service",
+    "get_topic",
+    "get_deadline",
+    "get_upsell",
+    "handle_payment_choice",
+    "confirm_order",
+    "handle_consultation_request",
+    "cancel_consultation",
+]
 
 
 async def _safe_edit(query, text, **kwargs):
@@ -82,8 +116,11 @@ async def start_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await _safe_edit(
         query,
-        "💼 <b>ШАГ 1/4: ОБЪЕКТ РАБОТЫ</b>\nВыберите тип задачи:",
-        reply_markup=builders.create_dynamic_service_keyboard(services), parse_mode="HTML"
+        INTRO_TEXT,
+        reply_markup=builders.create_dynamic_service_keyboard(
+            services, back_cb="home", back_text="🔙 В меню"
+        ),
+        parse_mode="HTML",
     )
     return TYPE
 
@@ -91,7 +128,14 @@ async def start_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def get_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    if query.data == "home": return ConversationHandler.END
+    if query.data == "home":
+        return ConversationHandler.END
+    if query.data in {"order_consult", "consultation_request"}:
+        kb_cancel = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("🔙 Отмена", callback_data="consult_cancel")]]
+        )
+        await _safe_edit(query, CONSULT_PROMPT, reply_markup=kb_cancel, parse_mode="HTML")
+        return CONSULT
     data = query.data or ""
     if not data.startswith("srv_"):
         return TYPE
@@ -140,8 +184,10 @@ async def confirm_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return ConversationHandler.END
         await _safe_edit(
             query,
-            "💼 <b>ШАГ 1/4: ОБЪЕКТ РАБОТЫ</b>\nВыберите тип задачи:",
-            reply_markup=builders.create_dynamic_service_keyboard(services),
+            INTRO_TEXT,
+            reply_markup=builders.create_dynamic_service_keyboard(
+                services, back_cb="home", back_text="🔙 В меню"
+            ),
             parse_mode="HTML",
         )
         return TYPE
@@ -184,6 +230,44 @@ async def get_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=kb.deadline_kb(), parse_mode="HTML"
     )
     return DEADLINE
+
+
+async def handle_consultation_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    message = update.effective_message
+
+    header = (
+        "#CONSULTATION\n"
+        f"👤 {user.full_name} (@{user.username or '—'})\n"
+        f"ID: {user.id}"
+    )
+    for admin_id in ADMIN_IDS:
+        try:
+            await context.bot.send_message(admin_id, header)
+            await context.bot.copy_message(
+                admin_id, from_chat_id=message.chat_id, message_id=message.message_id
+            )
+        except Exception:
+            pass
+
+    await message.reply_text(
+        "✅ Сообщение ушло Шерифу. Скоро свяжемся.",
+        reply_markup=kb.main_kb(user.id),
+        parse_mode="HTML",
+    )
+    return ConversationHandler.END
+
+
+async def cancel_consultation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await _safe_edit(
+        query,
+        "🚫 Отмена. Возвращаю в главное меню.",
+        reply_markup=kb.main_kb(query.from_user.id),
+        parse_mode="HTML",
+    )
+    return ConversationHandler.END
 
 # 4. Апселл (Допродажа)
 async def get_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -366,9 +450,11 @@ async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await _safe_edit(
         query,
-        f"✅ <b>ЗАЯВКА #{oid} ПРИНЯТА В РАБОТУ</b>\n\n"
-        f"Менеджер (Семён Юрьевич) получил уведомление. Ожидайте сообщения в ближайшее время.\n\n"
-        f"<i>Совет: Пока ждете, можете скинуть ссылку другу и заработать на его заказе.</i>",
+        f"✅ <b>ЗАКАЗ #{oid} ПРИНЯТ!</b>\n\n"
+        "Шериф уже изучает твое дело.\n"
+        "⏳ <b>Что дальше?</b>\n"
+        "В течение 15-30 минут тебе напишет менеджер, уточнит детали и назовет точную цену.\n\n"
+        "<i>Держи револьвер сухим, а личку открытой.</i>",
         parse_mode="HTML",
     )
     return ConversationHandler.END

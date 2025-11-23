@@ -66,6 +66,8 @@ def profile_kb():
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("📦 Мои заказы", callback_data="my_history")],
+            [InlineKeyboardButton("📜 История золота", callback_data="my_transactions")],
+            [InlineKeyboardButton("🎟 Ввести промокод", callback_data="enter_promo")],
             [InlineKeyboardButton("💰 Партнерка (15%)", callback_data="partners")],
             [InlineKeyboardButton("✍️ Написать отзыв", callback_data="write_review")],
             [InlineKeyboardButton("🔙 В главное меню", callback_data="home")],

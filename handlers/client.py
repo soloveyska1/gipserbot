@@ -1,7 +1,9 @@
 import asyncio
-from telegram import Update
-from telegram.error import BadRequest
-from telegram.ext import ContextTypes, ConversationHandler
+from typing import Any
+
+from telegram import Update, CallbackQuery
+from telegram.ext import ConversationHandler
+
 from database import core as db
 from database import db as catalog_db
 from keyboards import client_kb as kb
@@ -12,8 +14,9 @@ import utils  # Подключаем твои новые утилиты
 # ТВОЯ НОВАЯ КАРТИНКА (САЛУН)
 WELCOME_PHOTO_ID = "AgACAgIAAxkBAAIRBGkf3jybt7UiWBtsS4itzUfhWvceAALIC2sb7NgAAUkgNJP7MzMPsAEAAwIAA3kAAzYE"
 
-# Состояние для отзыва
+# Состояния диалогов
 REVIEW_STATE = 1
+PROMO_STATE = 2
 
 CODE_OF_HONOR = (
     "⚖️ <b>КОДЕКС ЧЕСТИ САЛУНА</b>\n\n"
@@ -31,7 +34,7 @@ CODE_OF_HONOR = (
 
 
 class _StateWrapper:
-    def __init__(self, context: ContextTypes.DEFAULT_TYPE):
+    def __init__(self, context: Any):
         self.context = context
 
     async def clear(self):
@@ -45,21 +48,50 @@ class _StateWrapper:
             pass
 
 
-async def _safe_edit(query, text, **kwargs):
+async def _safe_edit(query: CallbackQuery, text: str, **kwargs):
     msg = query.message
     try:
         if msg and msg.text:
             return await query.edit_message_text(text, **kwargs)
         if msg and msg.caption:
             return await query.edit_message_caption(caption=text, **kwargs)
-    except BadRequest as exc:
+    except Exception as exc:
         # Игнорируем попытку редактирования неизменённого/неподходящего сообщения
-        if "not modified" in str(exc).lower():
+        if "not modified" in str(exc).lower() or "message is not modified" in str(exc).lower():
             return msg
+        raise
     return await query.message.reply_text(text, **kwargs)
 
 
-async def _send_rules_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+_RANKS = [
+    {"threshold": 0, "name": "🤠 Новичок", "next_threshold": 5000},
+    {"threshold": 5000, "name": "🎓 Профи", "next_threshold": 20000},
+    {"threshold": 20000, "name": "📚 Власть Академии", "next_threshold": None},
+]
+
+
+def _rank_progress(total_spent: int) -> tuple[str, int | None, int, str]:
+    current = _RANKS[0]
+    for rank in _RANKS:
+        if total_spent >= rank["threshold"]:
+            current = rank
+
+    next_threshold = current["next_threshold"]
+    if next_threshold is None:
+        progress_ratio = 1.0
+        amount_needed = 0
+    else:
+        span = next_threshold - current["threshold"]
+        progress_ratio = min(1.0, max(0.0, (total_spent - current["threshold"]) / span))
+        amount_needed = max(0, next_threshold - total_spent)
+
+    filled = min(10, max(0, int(round(progress_ratio * 10))))
+    progress_bar = f"[{'■' * filled}{'□' * (10 - filled)}]"
+
+    return current["name"], next_threshold, amount_needed, progress_bar
+
+
+async def _send_rules_prompt(update: Update, context: Any):
     chat_id = update.effective_chat.id
     await utils.send_typing(context, chat_id)
     await asyncio.sleep(1.5)
@@ -73,7 +105,7 @@ async def _send_rules_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
 
 
-async def _ensure_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def _ensure_rules(update: Update, context: Any):
     user = await db.get_user(update.effective_user.id)
     if not user:
         return False
@@ -88,7 +120,7 @@ async def _ensure_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return False
     return True
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(update: Update, context: Any):
     user = update.effective_user
 
     # Имитация живого общения (печатает...)
@@ -142,7 +174,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _send_rules_prompt(update, context)
 
 
-async def accept_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def accept_rules(update: Update, context: Any):
     query = update.callback_query
     await query.answer()
     await db.update_user_field(query.from_user.id, "agreed_to_rules", 1)
@@ -156,15 +188,7 @@ async def accept_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-def _get_rank(total_spent: int) -> str:
-    if total_spent >= 20000:
-        return "📚 Власть Академии"
-    if total_spent >= 5000:
-        return "🎓 Профи"
-    return "🤠 Новичок"
-
-
-async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def profile(update: Update, context: Any):
     query = update.callback_query
     await query.answer()
 
@@ -175,19 +199,66 @@ async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = await db.get_user(query.from_user.id)
     if not u: return await start(update, context)
 
-    rank = _get_rank(u.get("total_spent", 0) or 0)
+    total_spent = u.get("total_spent", 0) or 0
+    rank_name, _, amount_needed, progress_bar = _rank_progress(total_spent)
 
     txt = (
         f"👤 <b>ЛИЧНОЕ ДЕЛО</b>\n"
-        f"🆔 ID: <code>{u['user_id']}</code>\n"
-        f"💰 Баланс: <b>{u['balance']} ₽</b>\n"
-        f"💸 Инвестировано в спокойствие: {u['total_spent']} ₽\n"
-        f"🏆 Ранг: {rank}"
+        f"🆔 ID: <code>{u['user_id']}</code>\n\n"
+        f"💰 <b>Золотой запас:</b> {u['balance']} RUB\n"
+        f"🏆 <b>Ранг:</b> {rank_name}\n"
+        f"📊 <b>Прогресс:</b> {progress_bar}\n"
+        f"До следующего звания: {amount_needed} RUB\n\n"
+        f"<i>Всего инвестировано в спокойствие: {total_spent} RUB</i>"
     )
     await _safe_edit(query, txt, reply_markup=kb.profile_kb(), parse_mode="HTML")
 
 
-async def _render_price_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, via_callback: bool = False):
+async def ask_promo_code(update: Update, context: Any):
+    query = update.callback_query
+    await query.answer()
+
+    allowed = await _ensure_rules(update, context)
+    if not allowed:
+        return ConversationHandler.END
+
+    prompt = (
+        "🎟 <b>Есть промокод?</b>\n"
+        "Введи его ниже, чтобы пополнить баланс салуна."
+    )
+    await _safe_edit(query, prompt, reply_markup=kb.back_kb("open_profile"), parse_mode="HTML")
+    return PROMO_STATE
+
+
+async def submit_promo_code(update: Update, context: Any):
+    user = update.effective_user
+    code = (update.message.text or "").strip()
+    if not code:
+        await update.message.reply_text(
+            "Введите текст промокода, партнер.",
+            reply_markup=kb.back_kb("open_profile"),
+            parse_mode="HTML",
+        )
+        return PROMO_STATE
+
+    promo = await catalog_db.apply_promo_to_user(user.id, code)
+    if not promo:
+        await update.message.reply_text(
+            "❌ Промокод не найден, истек или уже использован.",
+            reply_markup=kb.back_kb("open_profile"),
+            parse_mode="HTML",
+        )
+        return PROMO_STATE
+
+    await update.message.reply_text(
+        "💰 Промокод принят! Твой баланс пополнен.",
+        reply_markup=kb.profile_kb(),
+        parse_mode="HTML",
+    )
+    return ConversationHandler.END
+
+
+async def _render_price_menu(update: Update, context: Any, via_callback: bool = False):
     services = await catalog_db.get_all_services()
     if not services:
         if via_callback and update.callback_query:
@@ -205,39 +276,97 @@ async def _render_price_menu(update: Update, context: ContextTypes.DEFAULT_TYPE,
     markup = builders.create_dynamic_service_keyboard(
         services,
         prefix="price_srv_",
-        back_cb="price_list",
-        back_text="🔙 Назад к ценам",
+        back_cb="back_to_main_menu",
+        back_text="🏠 В главное меню",
     )
 
     if via_callback and update.callback_query:
-        try:
-            return await update.callback_query.message.edit_text(
-                text, reply_markup=markup, parse_mode="HTML"
-            )
-        except BadRequest:
-            return await _safe_edit(
-                update.callback_query, text, reply_markup=markup, parse_mode="HTML"
-            )
+        return await _safe_edit(
+            update.callback_query, text, reply_markup=markup, parse_mode="HTML"
+        )
     return await update.message.reply_text(text, reply_markup=markup, parse_mode="HTML")
 
 
-async def show_price_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def show_price_list(update: Update, context: Any):
     query = update.callback_query
     await query.answer()
     allowed = await _ensure_rules(update, context)
     if not allowed:
         return ConversationHandler.END
-    return await _render_price_menu(update, context, via_callback=True)
+
+    services = await catalog_db.get_all_services()
+    text = "📜 <b>Прейскурант Салуна</b>\nНиже наши расценки, партнер."
+
+    if not services:
+        empty_text = "⚠️ Технический перерыв: список услуг пуст. Сообщите шерифу."
+        if query.message and query.message.photo:
+            await query.message.delete()
+            return await query.message.reply_text(
+                text=empty_text, reply_markup=kb.back_kb("home"), parse_mode="HTML"
+            )
+        try:
+            return await query.message.edit_text(
+                text=empty_text, reply_markup=kb.back_kb("home"), parse_mode="HTML"
+            )
+        except Exception:
+            return await query.message.reply_text(
+                text=empty_text, reply_markup=kb.back_kb("home"), parse_mode="HTML"
+            )
+
+    markup = builders.create_dynamic_service_keyboard(
+        services,
+        prefix="price_srv_",
+        back_cb="back_to_main_menu",
+        back_text="🏠 В главное меню",
+    )
+
+    if query.message and query.message.photo:
+        await query.message.delete()
+        return await query.message.reply_text(
+            text=text, reply_markup=markup, parse_mode="HTML"
+        )
+
+    try:
+        return await query.message.edit_text(
+            text=text, reply_markup=markup, parse_mode="HTML"
+        )
+    except Exception:
+        return await query.message.reply_text(
+            text=text, reply_markup=markup, parse_mode="HTML"
+        )
 
 
-async def show_price_list_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def back_to_main_menu(update: Update, context: Any):
+    query = update.callback_query
+    await query.answer()
+
+    allowed = await _ensure_rules(update, context)
+    if not allowed:
+        return ConversationHandler.END
+
+    chat_id = query.message.chat_id if query.message else update.effective_chat.id
+    try:
+        if query.message:
+            await query.message.delete()
+    except Exception:
+        pass
+
+    return await context.bot.send_message(
+        chat_id=chat_id,
+        text="🏠 Главное меню. Выбирай нужный раздел, партнер.",
+        reply_markup=kb.main_kb(query.from_user.id),
+        parse_mode="HTML",
+    )
+
+
+async def show_price_list_text(update: Update, context: Any):
     allowed = await _ensure_rules(update, context)
     if not allowed:
         return ConversationHandler.END
     return await _render_price_menu(update, context, via_callback=False)
 
 
-async def show_price_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def show_price_card(update: Update, context: Any):
     query = update.callback_query
     await query.answer()
     allowed = await _ensure_rules(update, context)
@@ -259,9 +388,9 @@ async def show_price_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
     desc = srv.get("description") or "Описание готовится"
     price = srv.get("price", 0)
     txt = (
-        f"🤠 <b>{srv.get('name')}</b>\n"
+        f"🤠 <b>{srv.get('name')}</b>\n\n"
         f"{desc}\n\n"
-        f"💰 Цена: {price} ₽"
+        f"💰 <b>Цена:</b> {price} RUB"
     )
     return await _safe_edit(
         query,
@@ -270,7 +399,7 @@ async def show_price_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML",
     )
 
-async def partners(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def partners(update: Update, context: Any):
     query = update.callback_query
     await query.answer()
     allowed = await _ensure_rules(update, context)
@@ -285,9 +414,9 @@ async def partners(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"<code>{link}</code>\n\n"
         "<i>Раздай её в универе.</i>"
     )
-    await _safe_edit(query, text, reply_markup=kb.back_kb("home"), parse_mode="HTML")
+    await _safe_edit(query, text, reply_markup=kb.back_kb("open_profile"), parse_mode="HTML")
 
-async def my_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def my_history(update: Update, context: Any):
     query = update.callback_query
     await query.answer()
     allowed = await _ensure_rules(update, context)
@@ -297,29 +426,41 @@ async def my_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not orders:
         await _safe_edit(query, "📂 <b>Архив пуст.</b>", reply_markup=kb.profile_kb(), parse_mode="HTML")
     else:
-        await _safe_edit(query, "📂 <b>ВАШИ ДЕЛА:</b>", reply_markup=kb.history_kb(orders), parse_mode="HTML")
+        trimmed = orders[:5]
+        history_markup = builders.create_orders_history_keyboard(trimmed)
+        await _safe_edit(query, "📂 <b>ВАШИ ДЕЛА:</b>", reply_markup=history_markup, parse_mode="HTML")
 
-async def my_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def my_order(update: Update, context: Any):
     query = update.callback_query
     await query.answer()
     oid = int(query.data.split("_")[-1])
     o = await db.get_order(oid)
-    status_map = {
-        "checking": "🟡 На проверке",
-        "work": "⚙️ В работе",
-        "done": "✅ Готов",
+    status_label = {
+        "new": "⏳ Ждет шерифа",
+        "checking": "⏳ Ждет шерифа",
+        "pending_pay": "⏳ Ждет шерифа",
+        "paid": "⏳ Ждет шерифа",
+        "work": "🤠 В работе",
+        "completed": "✅ Выполнено",
+        "done": "✅ Выполнено",
         "cancel": "❌ Отмена",
-    }
+        "canceled": "❌ Отмена",
+        "cancelled": "❌ Отмена",
+    }.get(o.get("status"), o.get("status", "?"))
+
+    admin_comment = o.get("admin_comment") or o.get("comment") or "—"
+    price_value = o.get("final_price") or o.get("price") or 0
     txt = (
         f"📦 <b>ЗАКАЗ #{o['id']}</b>\n"
-        f"📚 Тип: {o['service_type']}\n"
-        f"💰 Цена: {o['price']} ₽\n"
-        f"📊 Статус: {status_map.get(o['status'], o['status'])}\n"
-        f"📝 Тема: {o['topic']}"
+        f"📚 Услуга: {o.get('service_type', 'Услуга')}\n"
+        f"💰 Цена: {price_value} ₽\n"
+        f"📊 Статус: {status_label}\n"
+        f"📝 Тема: {o.get('topic', '—')}\n"
+        f"💬 Комментарий шерифа: {admin_comment}"
     )
-    await _safe_edit(query, txt, reply_markup=kb.order_details_kb(oid, o['status']), parse_mode="HTML")
+    await _safe_edit(query, txt, reply_markup=kb.order_details_kb(oid, o.get('status')), parse_mode="HTML")
 
-async def my_transactions(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def my_transactions(update: Update, context: Any):
     query = update.callback_query
     await query.answer()
     trans = await db.get_transactions(query.from_user.id)
@@ -332,7 +473,7 @@ async def my_transactions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _safe_edit(query, txt, reply_markup=kb.back_kb("profile"), parse_mode="HTML")
 
 
-async def show_code_of_honor(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def show_code_of_honor(update: Update, context: Any):
     query = update.callback_query
     allowed = await _ensure_rules(update, context)
     if not allowed:
@@ -343,28 +484,28 @@ async def show_code_of_honor(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return await update.message.reply_text(CODE_OF_HONOR, reply_markup=kb.back_kb("home"), parse_mode="HTML")
 
 # --- ОТЗЫВЫ ---
-async def ask_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def ask_review(update: Update, context: Any):
     query = update.callback_query
     await query.answer()
     await _safe_edit(
         query,
         "✍️ <b>Напиши пару слов:</b>\n\nМы прибьем твой отзыв на доску почета (в канал) анонимно.\nКидай текст или скрин.",
-        reply_markup=kb.back_kb("home"),
+        reply_markup=kb.back_kb("open_profile"),
         parse_mode="HTML"
     )
     return REVIEW_STATE
 
 
-async def cancel_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cancel_review(update: Update, context: Any):
     state = _StateWrapper(context)
     await state.clear()
     query = update.callback_query
     if query:
         await query.answer()
-    await start(update, context)
+    await profile(update, context)
     return ConversationHandler.END
 
-async def submit_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def submit_review(update: Update, context: Any):
     user = update.effective_user
     text = update.message.caption if update.message.caption else update.message.text
     if not text: text = "Без текста"
@@ -396,7 +537,7 @@ async def submit_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await state.clear()
     return ConversationHandler.END
 
-async def handle_thanks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_thanks(update: Update, context: Any):
     if not update.message or not update.message.text: return
     text = update.message.text.lower()
     keywords = ["спасибо", "спс", "благодарю", "thanks"]

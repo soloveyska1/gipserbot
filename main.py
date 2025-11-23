@@ -1,8 +1,26 @@
 import logging
 import os
+import sys
+from pathlib import Path
+
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ConversationHandler
+
+# Ensure the project root is always importable, no matter the working dir
+BASE_DIR = Path(__file__).resolve().parent
+PARENT_DIR = BASE_DIR.parent
+for path in (str(BASE_DIR), str(PARENT_DIR)):
+    if path not in sys.path:
+        sys.path.insert(0, path)
+
+# Normalize CWD to the project root so relative imports/files behave the same in all environments
+try:
+    os.chdir(BASE_DIR)
+except Exception:
+    pass
+
 from config import BOT_TOKEN, LOGS_DIR
 from database.core import init_db
+from database import db as catalog_db
 from handlers import client, order_flow, chat, admin, promos
 from handlers.error_handler import error_handler
 
@@ -18,6 +36,7 @@ logging.basicConfig(
 def main():
     print("🔌 Подключаем базу данных...")
     init_db()
+    catalog_db.seed_services()
     
     print("🚀 Запуск бота...")
     app = Application.builder().token(BOT_TOKEN).build()
@@ -32,7 +51,11 @@ def main():
     order_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(order_flow.start_order, pattern="^order_start$")],
         states={
-            order_flow.TYPE: [CallbackQueryHandler(order_flow.get_type, pattern="^srv_")],
+            order_flow.TYPE: [
+                CallbackQueryHandler(order_flow.get_type, pattern="^srv_"),
+                CallbackQueryHandler(order_flow.get_type, pattern="^consultation_request$"),
+                CallbackQueryHandler(order_flow.get_type, pattern="^order_consult$")
+            ],
             order_flow.SERVICE_CARD: [CallbackQueryHandler(order_flow.confirm_service, pattern="^srv_confirm_|^srv_back$")],
             order_flow.TOPIC: [
                 MessageHandler(filters.Document.ALL | filters.PHOTO | filters.TEXT & ~filters.COMMAND, order_flow.get_topic),
@@ -41,7 +64,14 @@ def main():
             order_flow.DEADLINE: [CallbackQueryHandler(order_flow.get_deadline, pattern="^time_|^back_to_topic$")],
             order_flow.UPSELL: [CallbackQueryHandler(order_flow.get_upsell, pattern="^toggle_|^upsell_done$|^back_to_deadline$")],
             order_flow.PAY_CHOICE: [CallbackQueryHandler(order_flow.handle_payment_choice, pattern="^use_points_yes$|^use_points_no$")],
-            order_flow.CONFIRM: [CallbackQueryHandler(order_flow.confirm_order, pattern="^submit_order$|^home$")]
+            order_flow.CONFIRM: [CallbackQueryHandler(order_flow.confirm_order, pattern="^submit_order$|^home$")],
+            order_flow.CONSULT: [
+                CallbackQueryHandler(order_flow.cancel_consultation, pattern="^consult_cancel$"),
+                MessageHandler(
+                    filters.Document.ALL | filters.PHOTO | filters.TEXT & ~filters.COMMAND,
+                    order_flow.handle_consultation_request,
+                ),
+            ],
         },
         fallbacks=[
             CallbackQueryHandler(client.start, pattern="^home$"),
@@ -55,7 +85,9 @@ def main():
     app.add_handler(CallbackQueryHandler(client.start, pattern="^home$"))
     app.add_handler(CallbackQueryHandler(client.accept_rules, pattern="^rules_accept$"))
     app.add_handler(CallbackQueryHandler(client.profile, pattern="^profile$"))
+    app.add_handler(CallbackQueryHandler(client.profile, pattern="^open_profile$"))
     app.add_handler(CallbackQueryHandler(client.show_price_list, pattern="^price_list$"))
+    app.add_handler(CallbackQueryHandler(client.back_to_main_menu, pattern="^back_to_main_menu$"))
     app.add_handler(CallbackQueryHandler(client.show_price_card, pattern="^price_srv_"))
     app.add_handler(CallbackQueryHandler(client.show_code_of_honor, pattern="^code_honor$"))
     app.add_handler(MessageHandler(filters.Regex(r"^📜 Меню \(Цены\)$"), client.show_price_list_text))
@@ -71,9 +103,29 @@ def main():
         states={
             client.REVIEW_STATE: [MessageHandler(filters.TEXT | filters.PHOTO, client.submit_review)]
         },
-        fallbacks=[CallbackQueryHandler(client.cancel_review, pattern="^home$")]
+        fallbacks=[
+            CallbackQueryHandler(client.cancel_review, pattern="^home$"),
+            CallbackQueryHandler(client.cancel_review, pattern="^open_profile$"),
+        ]
     )
     app.add_handler(review_conv)
+
+    promo_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(client.ask_promo_code, pattern="^enter_promo$")],
+        states={
+            client.PROMO_STATE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, client.submit_promo_code),
+                CallbackQueryHandler(client.profile, pattern="^open_profile$"),
+                CallbackQueryHandler(client.start, pattern="^home$"),
+            ]
+        },
+        fallbacks=[
+            CallbackQueryHandler(client.profile, pattern="^open_profile$"),
+            CallbackQueryHandler(client.start, pattern="^home$"),
+        ],
+        allow_reentry=True,
+    )
+    app.add_handler(promo_conv)
 
     # === ЧАТ ===
     chat_conv = ConversationHandler(
