@@ -832,7 +832,7 @@ async def delete_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         return
     await crm_db.delete_service(svc_id)
-    await query.answer("Удалено")
+    await query.answer("Услуга удалена", show_alert=True)
     await show_services(update, context)
 
 
@@ -1084,6 +1084,7 @@ def setup(app):
 
     app.add_handler(CallbackQueryHandler(show_services, pattern="^admin_prices$"))
     app.add_handler(CallbackQueryHandler(show_service_actions, pattern=r"^edit_svc_\d+$"))
+    app.add_handler(CallbackQueryHandler(delete_service, pattern=r"^svc_delete_\d+$"))
     service_conv = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(start_add_service, pattern="^add_service$"),
