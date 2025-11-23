@@ -3,7 +3,6 @@ from typing import Any
 from types import SimpleNamespace
 
 from aiogram import Router, F, types
-from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 
 from database import core as db
@@ -59,10 +58,11 @@ async def _safe_edit(query, text, **kwargs):
             return await query.edit_message_text(text, **kwargs)
         if msg and msg.caption:
             return await query.edit_message_caption(caption=text, **kwargs)
-    except TelegramBadRequest as exc:
+    except Exception as exc:
         # Игнорируем попытку редактирования неизменённого/неподходящего сообщения
-        if "not modified" in str(exc).lower():
+        if "not modified" in str(exc).lower() or "message is not modified" in str(exc).lower():
             return msg
+        raise
     return await query.message.reply_text(text, **kwargs)
 
 
