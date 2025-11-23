@@ -271,6 +271,41 @@ def get_users_list_kb(users: Iterable[dict], page: int = 0) -> InlineKeyboardMar
     return InlineKeyboardMarkup(kb)
 
 
+def user_orders_kb(orders: Iterable[dict], back_cb: str) -> InlineKeyboardMarkup:
+    status_emoji = {
+        "checking": "🟡",
+        "pending_pay": "💳",
+        "paid": "💸",
+        "work": "⚙️",
+        "norm_control": "🧭",
+        "edits": "✏️",
+        "suspended": "⏸",
+        "done": "✅",
+        "cancel": "❌",
+    }
+
+    kb: list[list[InlineKeyboardButton]] = []
+    has_orders = False
+    for order in orders:
+        has_orders = True
+        price = order.get("final_price", order.get("price", 0))
+        label = f"#{order['id']} | {status_emoji.get(order['status'], '?')} | {price}₽"
+        kb.append(
+            [
+                InlineKeyboardButton(
+                    label,
+                    callback_data=OrderCallback(action="view", id=order["id"]).pack(),
+                )
+            ]
+        )
+
+    if not has_orders:
+        kb.append([InlineKeyboardButton("— Нет заказов —", callback_data=back_cb)])
+
+    kb.append([InlineKeyboardButton("⬅️ Назад", callback_data=back_cb)])
+    return InlineKeyboardMarkup(kb)
+
+
 def get_user_profile_kb(user_id: int, is_banned: bool, page: int = 0) -> InlineKeyboardMarkup:
     ban_label = "✅ Разбанить" if is_banned else "🚫 Забанить"
     return InlineKeyboardMarkup(

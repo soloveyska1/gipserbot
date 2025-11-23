@@ -3,7 +3,7 @@ from telegram import Update
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes, ConversationHandler
 from database import core as db
-from keyboards import menu as kb
+from keyboards import client_kb as kb
 from config import REVIEW_CHANNEL_ID
 import utils  # Подключаем твои новые утилиты
 
@@ -21,6 +21,21 @@ CODE_OF_HONOR = (
     "4. <b>Сроки:</b> В сезон Шериф может отвечать не сразу. Не паникуй.\n"
     "5. <b>Анонимность:</b> Всё строго между нами."
 )
+
+
+class _StateWrapper:
+    def __init__(self, context: ContextTypes.DEFAULT_TYPE):
+        self.context = context
+
+    async def clear(self):
+        try:
+            self.context.user_data.clear()
+        except Exception:
+            pass
+        try:
+            self.context.chat_data.clear()
+        except Exception:
+            pass
 
 
 async def _safe_edit(query, text, **kwargs):
@@ -225,6 +240,16 @@ async def ask_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return REVIEW_STATE
 
+
+async def cancel_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query:
+        await query.answer()
+    state = _StateWrapper(context)
+    await state.clear()
+    await start(update, context)
+    return ConversationHandler.END
+
 async def submit_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     text = update.message.caption if update.message.caption else update.message.text
@@ -246,29 +271,16 @@ async def submit_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_photo(chat_id=REVIEW_CHANNEL_ID, photo=file_id, caption=channel_text, parse_mode="HTML")
         else:
             await context.bot.send_message(chat_id=REVIEW_CHANNEL_ID, text=channel_text, parse_mode="HTML")
-        
+
         # Используем рандомную фразу из utils
         thanks_text = "✅ " + utils.get_random_phrase("done") + "\n\nВаш отзыв опубликован."
         await update.message.reply_text(thanks_text, reply_markup=kb.main_kb(user.id), parse_mode="HTML")
     except Exception as e:
         # ВАЖНО: Если бот не админ в канале, он напишет ошибку здесь
         await update.message.reply_text(f"❌ Ошибка шерифа (права в канале): {e}", reply_markup=kb.main_kb(user.id))
+    state = _StateWrapper(context)
+    await state.clear()
     return ConversationHandler.END
-
-# --- ДЕЙСТВИЯ ---
-async def cli_approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    oid = int(query.data.split("_")[-1])
-    await db.update_order_status(oid, "done")
-    await query.answer("✅ Заказ подтвержден!")
-    await my_order(update, context)
-
-async def cli_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    oid = int(query.data.split("_")[-1])
-    await db.update_order_visibility(oid, False)
-    await query.answer("🗑 Удалено")
-    await my_history(update, context)
 
 async def handle_thanks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text: return

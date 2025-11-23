@@ -37,6 +37,21 @@ def _is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
 
+class _StateWrapper:
+    def __init__(self, context: ContextTypes.DEFAULT_TYPE):
+        self.context = context
+
+    async def clear(self):
+        try:
+            self.context.user_data.clear()
+        except Exception:
+            pass
+        try:
+            self.context.chat_data.clear()
+        except Exception:
+            pass
+
+
 async def _safe_edit(query, text, **kwargs):
     msg = query.message
     try:
@@ -53,6 +68,8 @@ async def _safe_edit(query, text, **kwargs):
 async def entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_admin(update.effective_user.id):
         return
+    state = _StateWrapper(context)
+    await state.clear()
     await update.message.reply_text("💀 <b>GOD MODE ACTIVATED</b>", reply_markup=admin_kb.main_menu(), parse_mode="HTML")
 
 
@@ -89,7 +106,11 @@ async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if query:
         await query.answer()
+    state = _StateWrapper(context)
+    await state.clear()
+    if query:
         await _safe_edit(query, "💀 <b>GOD MODE ACTIVATED</b>", reply_markup=admin_kb.main_menu(), parse_mode="HTML")
+    return ConversationHandler.END
 
 
 # --- CLIENTS CRM ---
@@ -217,6 +238,8 @@ async def save_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cancel_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cb = _parse_user_callback(update)
+    state = _StateWrapper(context)
+    await state.clear()
     if cb:
         await show_client_profile(update, context, user_id=cb.id, page=cb.page)
     return ConversationHandler.END
@@ -265,12 +288,16 @@ async def send_dm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Не удалось доставить сообщение")
     else:
         await update.message.reply_text("✅ Отправлено")
+    state = _StateWrapper(context)
+    await state.clear()
     await show_client_profile(update, context, user_id=target, page=page)
     return ConversationHandler.END
 
 
 async def cancel_dm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cb = _parse_user_callback(update)
+    state = _StateWrapper(context)
+    await state.clear()
     if cb:
         await show_client_profile(update, context, user_id=cb.id, page=cb.page)
     return ConversationHandler.END
@@ -319,6 +346,8 @@ async def save_points_change(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def cancel_points_change(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cb = _parse_user_callback(update)
+    state = _StateWrapper(context)
+    await state.clear()
     if cb:
         await show_client_profile(update, context, user_id=cb.id, page=cb.page)
     return ConversationHandler.END
@@ -332,26 +361,9 @@ async def show_user_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query:
         await query.answer()
     orders = await db.get_user_orders(cb.id)
-    status_label = {
-        "checking": "🟡 На проверке",
-        "pending_pay": "💳 Ждёт оплаты",
-        "paid": "💸 Оплачено",
-        "work": "⚙️ В работе",
-        "norm_control": "🧭 Нормоконтроль",
-        "edits": "✏️ Правки",
-        "suspended": "⏸ Приостановлен",
-        "done": "✅ Выполнен",
-        "cancel": "❌ Отменён",
-    }
-    lines = ["📦 Заказы пользователя"]
-    if not orders:
-        lines.append("Нет заказов")
-    else:
-        for o in orders:
-            lines.append(f"#{o['id']}: {status_label.get(o['status'], o['status'])} — {o.get('final_price', o['price'])}₽")
     back_cb = UserCallback(action="view", id=cb.id, page=cb.page).pack()
-    markup = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data=back_cb)]])
-    await _safe_edit(query, "\n".join(lines), reply_markup=markup, parse_mode="HTML")
+    markup = admin_kb.user_orders_kb(orders, back_cb)
+    await _safe_edit(query, "📦 Заказы пользователя", reply_markup=markup, parse_mode="HTML")
 
 
 async def start_user_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -516,6 +528,8 @@ async def save_balance_change(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def cancel_balance_change(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     cb = _parse_order_callback(update)
+    state = _StateWrapper(context)
+    await state.clear()
     if query:
         await query.answer("Отменено")
     if cb:
@@ -654,6 +668,8 @@ async def cancel_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_admin(update.effective_user.id):
         return ConversationHandler.END
     query = update.callback_query
+    state = _StateWrapper(context)
+    await state.clear()
     if query:
         await query.answer("Отменено")
     await show_prices(update, context)
@@ -746,6 +762,8 @@ async def start_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if query:
         await query.answer()
+    state = _StateWrapper(context)
+    await state.clear()
     context.user_data.pop("broadcast", None)
     await _safe_edit(
         query,
@@ -823,6 +841,8 @@ async def confirm_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query:
         await query.answer()
     if query.data == "admin_main":
+        state = _StateWrapper(context)
+        await state.clear()
         await _safe_edit(query, "Отменено", reply_markup=admin_kb.main_menu())
         return ConversationHandler.END
     payload = context.user_data.get("broadcast") or {}
@@ -848,6 +868,8 @@ async def confirm_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✅ Рассылка завершена. Доставлено: {sent}/{len(targets)}",
         reply_markup=admin_kb.main_menu(),
     )
+    state = _StateWrapper(context)
+    await state.clear()
     context.user_data.pop("broadcast", None)
     return ConversationHandler.END
 

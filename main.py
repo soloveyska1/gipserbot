@@ -31,8 +31,6 @@ def main():
     app.add_handler(CallbackQueryHandler(client.my_history, pattern="^my_history$"))
     app.add_handler(CallbackQueryHandler(client.my_transactions, pattern="^my_transactions$"))
     app.add_handler(CallbackQueryHandler(client.my_order, pattern="^my_order_"))
-    app.add_handler(CallbackQueryHandler(client.cli_approve, pattern="^cli_approve_"))
-    app.add_handler(CallbackQueryHandler(client.cli_delete, pattern="^cli_delete_"))
 
     # === ОТЗЫВЫ ===
     review_conv = ConversationHandler(
@@ -40,7 +38,7 @@ def main():
         states={
             client.REVIEW_STATE: [MessageHandler(filters.TEXT | filters.PHOTO, client.submit_review)]
         },
-        fallbacks=[CallbackQueryHandler(client.start, pattern="^home$")]
+        fallbacks=[CallbackQueryHandler(client.cancel_review, pattern="^home$")]
     )
     app.add_handler(review_conv)
 

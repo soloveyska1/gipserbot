@@ -1,5 +1,5 @@
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from config import SERVICES, ADMIN_IDS, CHANNEL_LINK
+from config import SERVICES, ADMIN_IDS
 
 # === КЛИЕНТСКИЕ КЛАВИАТУРЫ ===
 
@@ -8,7 +8,7 @@ def main_kb(user_id):
         [InlineKeyboardButton("🔥 СДЕЛАТЬ ЗАКАЗ", callback_data="order_start")],
         [InlineKeyboardButton("👤 Личный кабинет", callback_data="profile"), InlineKeyboardButton("💬 Оставить отзыв", callback_data="write_review")],
         [InlineKeyboardButton("🕸 Партнерка (15%)", callback_data="partners"), InlineKeyboardButton("👨‍💻 Саппорт", url=f"tg://user?id={ADMIN_IDS[0]}")],
-        [InlineKeyboardButton("👁 Читать отзывы", url=CHANNEL_LINK)]
+        [InlineKeyboardButton("👀 Читать отзывы", url="https://t.me/c/178428445/1")]
     ]
     return InlineKeyboardMarkup(kb)
 
@@ -69,15 +69,8 @@ def history_kb(orders):
     return InlineKeyboardMarkup(kb)
 
 def order_details_kb(oid, status="review"):
-    actions = []
-    if status in ["work", "review"]:
-        actions.append(InlineKeyboardButton("✅ Подтвердить выполнение", callback_data=f"cli_approve_{oid}"))
-    
-    actions.append(InlineKeyboardButton("🗑 Скрыть из списка", callback_data=f"cli_delete_{oid}"))
-
     kb = [
         [InlineKeyboardButton("💬 ЧАТ С МЕНЕДЖЕРОМ", callback_data=f"chat_order_{oid}")],
-        actions,
         [InlineKeyboardButton("🔙 Назад", callback_data="my_history")]
     ]
     return InlineKeyboardMarkup(kb)
