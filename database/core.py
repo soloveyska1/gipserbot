@@ -15,7 +15,8 @@ ALLOWED_STATUSES = {
 
 
 async def get_connection():
-    return sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH)
+    return conn
 
 
 def _column_exists(cursor, table, column):
@@ -155,10 +156,17 @@ def init_db():
 
         _ensure_column(cursor, "users", "is_alive", "is_alive INTEGER DEFAULT 1")
         _ensure_column(cursor, "users", "agreed_to_rules", "agreed_to_rules INTEGER DEFAULT 0")
+
+        if _column_exists(cursor, "orders", "order_type") and not _column_exists(cursor, "orders", "service_type"):
+            cursor.execute("ALTER TABLE orders RENAME COLUMN order_type TO service_type")
+            logging.info("[DB] Переименован order_type в service_type")
+
         _ensure_column(cursor, "orders", "is_hidden_for_user", "is_hidden_for_user INTEGER DEFAULT 0")
         _ensure_column(cursor, "orders", "referral_bonus_paid", "referral_bonus_paid INTEGER DEFAULT 0")
         _ensure_column(cursor, "orders", "promo_code", "promo_code TEXT")
         _ensure_column(cursor, "orders", "last_ping_time", "last_ping_time TIMESTAMP")
+        _ensure_column(cursor, "orders", "deadline_type", "deadline_type TEXT")
+        _ensure_column(cursor, "orders", "upsell", "upsell INTEGER DEFAULT 0")
 
         cursor.execute(
             "INSERT OR IGNORE INTO settings (key, value) VALUES ('maintenance_mode', '0')"
@@ -235,7 +243,17 @@ async def add_user(user_id, username, full_name, referrer_id=0):
 async def get_user(user_id):
     conn = await get_connection()
     try:
-        cursor = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+        cursor = conn.execute(
+            """
+            SELECT user_id, username, full_name, balance, total_spent, orders_count, is_banned,
+                   COALESCE(referrer_id, 0) as referrer_id,
+                   COALESCE(is_alive, 1) as is_alive,
+                   COALESCE(agreed_to_rules, 0) as agreed_to_rules,
+                   joined_at
+            FROM users WHERE user_id = ?
+            """,
+            (user_id,),
+        )
         row = cursor.fetchone()
         if row:
             return {
@@ -259,7 +277,9 @@ async def get_user(user_id):
 async def get_all_users():
     conn = await get_connection()
     try:
-        cursor = conn.execute("SELECT user_id, full_name, username, balance, is_banned, referrer_id, is_alive FROM users")
+        cursor = conn.execute(
+            "SELECT user_id, full_name, username, balance, is_banned, COALESCE(referrer_id, 0), COALESCE(is_alive, 1) FROM users"
+        )
         users = []
         for row in cursor.fetchall():
             users.append(
@@ -300,7 +320,15 @@ async def adjust_balance(user_id, delta, reason=""):
 async def get_order(order_id):
     conn = await get_connection()
     try:
-        cursor = conn.execute("SELECT * FROM orders WHERE id = ?", (order_id,))
+        cursor = conn.execute(
+            """
+            SELECT id, user_id, service_type, topic, deadline, status, price, files, speech, pres, vip, is_visible,
+                   COALESCE(is_hidden_for_user, 0), created_at, deadline_type, COALESCE(upsell, 0),
+                   COALESCE(referral_bonus_paid, 0), promo_code, last_ping_time
+            FROM orders WHERE id = ?
+            """,
+            (order_id,),
+        )
         row = cursor.fetchone()
         if row:
             return {
@@ -333,7 +361,14 @@ async def get_user_orders(user_id):
     conn = await get_connection()
     try:
         cursor = conn.execute(
-            "SELECT * FROM orders WHERE user_id = ? AND is_visible = 1 AND is_hidden_for_user = 0 ORDER BY id DESC",
+            """
+            SELECT id, user_id, service_type, topic, deadline, status, price, files, speech, pres, vip, is_visible,
+                   COALESCE(is_hidden_for_user, 0), created_at, deadline_type, COALESCE(upsell, 0),
+                   COALESCE(referral_bonus_paid, 0), promo_code, last_ping_time
+            FROM orders
+            WHERE user_id = ? AND is_visible = 1 AND COALESCE(is_hidden_for_user, 0) = 0
+            ORDER BY id DESC
+            """,
             (user_id,),
         )
         orders = []
@@ -357,7 +392,13 @@ async def get_user_orders(user_id):
 async def get_all_orders(limit=100):
     conn = await get_connection()
     try:
-        cursor = conn.execute("SELECT * FROM orders WHERE status != 'done' ORDER BY id DESC LIMIT ?", (limit,))
+        cursor = conn.execute(
+            """
+            SELECT id, user_id, service_type, topic, deadline, status, price, promo_code
+            FROM orders WHERE status != 'done' ORDER BY id DESC LIMIT ?
+            """,
+            (limit,),
+        )
         orders = []
         for row in cursor.fetchall():
             orders.append(
@@ -368,7 +409,7 @@ async def get_all_orders(limit=100):
                     "price": row[6],
                     "service_type": row[2],
                     "topic": row[3],
-                    "promo_code": row[17],
+                    "promo_code": row[7],
                 }
             )
         return orders
