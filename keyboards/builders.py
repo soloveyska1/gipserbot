@@ -2,14 +2,10 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from config import ADMIN_ID, ORDER_TYPES
 
 def main_menu(user_id):
-    # Кнопка админки видна только админу
-    admin_btn = [InlineKeyboardButton("👑 GOD MODE", callback_data="admin_start")] if user_id == ADMIN_ID else []
-    
     kb = [
         [InlineKeyboardButton("⚡️ РАССЧИТАТЬ ЗАКАЗ", callback_data="new_order")],
         [InlineKeyboardButton("👤 Мой сейф (Профиль)", callback_data="profile"), InlineKeyboardButton("💎 Партнерка", callback_data="partners")],
         [InlineKeyboardButton("💬 Отзывы", url="https://t.me/durov"), InlineKeyboardButton("🆘 Саппорт", url=f"tg://user?id={ADMIN_ID}")],
-        admin_btn
     ]
     return InlineKeyboardMarkup(kb)
 

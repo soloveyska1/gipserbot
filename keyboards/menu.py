@@ -4,17 +4,12 @@ from config import SERVICES, ADMIN_IDS, CHANNEL_LINK
 # === КЛИЕНТСКИЕ КЛАВИАТУРЫ ===
 
 def main_kb(user_id):
-    admin_btn = []
-    # Проверяем, админ ли юзер
-    if user_id in ADMIN_IDS:
-        admin_btn = [[InlineKeyboardButton("💀 GOD MODE (АДМИНКА)", callback_data="admin_panel")]]
-
     kb = [
         [InlineKeyboardButton("🔥 СДЕЛАТЬ ЗАКАЗ", callback_data="order_start")],
         [InlineKeyboardButton("👤 Личный кабинет", callback_data="profile"), InlineKeyboardButton("💬 Оставить отзыв", callback_data="write_review")],
         [InlineKeyboardButton("🕸 Партнерка (15%)", callback_data="partners"), InlineKeyboardButton("👨‍💻 Саппорт", url=f"tg://user?id={ADMIN_IDS[0]}")],
         [InlineKeyboardButton("👁 Читать отзывы", url=CHANNEL_LINK)]
-    ] + admin_btn
+    ]
     return InlineKeyboardMarkup(kb)
 
 def services_kb():

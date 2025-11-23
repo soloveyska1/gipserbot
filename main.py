@@ -3,7 +3,7 @@ import os
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ConversationHandler
 from config import BOT_TOKEN, LOGS_DIR
 from database.core import init_db
-from handlers import client, order_flow, admin_god, chat
+from handlers import client, order_flow, chat, admin
 from handlers.error_handler import error_handler
 
 # Настройка логов
@@ -65,27 +65,7 @@ def main():
     app.add_handler(order_conv)
 
     # === АДМИНКА ===
-    app.add_handler(CallbackQueryHandler(admin_god.entry, pattern="^admin_panel$"))
-    app.add_handler(CallbackQueryHandler(admin_god.stats, pattern="^adm_stats$"))
-    app.add_handler(CallbackQueryHandler(admin_god.list_orders, pattern="^adm_orders_list$|^adm_ord_page_"))
-    app.add_handler(CallbackQueryHandler(admin_god.order_action, pattern="^adm_order_"))
-    app.add_handler(CallbackQueryHandler(admin_god.set_order_status, pattern="^set_status_"))
-    app.add_handler(CallbackQueryHandler(admin_god.list_users, pattern="^adm_users_list$|^adm_usr_page_"))
-    app.add_handler(CallbackQueryHandler(admin_god.user_action, pattern="^adm_user_"))
-    app.add_handler(CallbackQueryHandler(admin_god.toggle_ban, pattern="^ban_|^unban_"))
-
-    # Настройки цен
-    settings_conv = ConversationHandler(
-        entry_points=[
-            CallbackQueryHandler(admin_god.settings_menu, pattern="^adm_settings$"),
-            CallbackQueryHandler(admin_god.set_price_start, pattern="^set_price_")
-        ],
-        states={
-            1: [MessageHandler(filters.TEXT, admin_god.set_price_process)]
-        },
-        fallbacks=[CallbackQueryHandler(admin_god.settings_menu, pattern="^adm_settings$")]
-    )
-    app.add_handler(settings_conv)
+    admin.setup(app)
 
     # === ЧАТ ===
     chat_conv = ConversationHandler(

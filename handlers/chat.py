@@ -3,6 +3,7 @@ from telegram.error import BadRequest
 from telegram.ext import ContextTypes, ConversationHandler
 from database import core as db
 from keyboards import menu as kb
+from keyboards import admin_kb
 from config import ADMIN_ID
 
 CHAT_STEP = 1
@@ -143,9 +144,9 @@ async def cancel_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📝 Тема: {o['topic']}\n"
         )
         if query:
-            await _safe_edit(query, txt, reply_markup=kb.admin_order_actions(oid, o['status']), parse_mode="HTML")
+            await _safe_edit(query, txt, reply_markup=admin_kb.order_actions(oid, o['status']), parse_mode="HTML")
         else:
-            await update.message.reply_text(txt, reply_markup=kb.admin_order_actions(oid, o['status']), parse_mode="HTML")
+            await update.message.reply_text(txt, reply_markup=admin_kb.order_actions(oid, o['status']), parse_mode="HTML")
     else:
         # Redirect to client order view
         o = await db.get_order(oid)
