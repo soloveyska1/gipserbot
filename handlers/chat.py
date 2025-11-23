@@ -1,4 +1,5 @@
 from telegram import Update
+from telegram.error import BadRequest
 from telegram.ext import ContextTypes, ConversationHandler
 from database import core as db
 from keyboards import menu as kb
@@ -8,10 +9,14 @@ CHAT_STEP = 1
 
 async def _safe_edit(query, text, **kwargs):
     msg = query.message
-    if msg and msg.text:
-        return await query.edit_message_text(text, **kwargs)
-    if msg and msg.caption:
-        return await query.edit_message_caption(caption=text, **kwargs)
+    try:
+        if msg and msg.text:
+            return await query.edit_message_text(text, **kwargs)
+        if msg and msg.caption:
+            return await query.edit_message_caption(caption=text, **kwargs)
+    except BadRequest as exc:
+        if "not modified" in str(exc).lower():
+            return msg
     return await query.message.reply_text(text, **kwargs)
 
 
