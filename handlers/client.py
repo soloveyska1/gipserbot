@@ -217,14 +217,9 @@ async def _render_price_menu(update: types.Update, context: Any, via_callback: b
     )
 
     if via_callback and update.callback_query:
-        try:
-            return await update.callback_query.message.edit_text(
-                text, reply_markup=markup, parse_mode="HTML"
-            )
-        except TelegramBadRequest:
-            return await _safe_edit(
-                update.callback_query, text, reply_markup=markup, parse_mode="HTML"
-            )
+        return await _safe_edit(
+            update.callback_query, text, reply_markup=markup, parse_mode="HTML"
+        )
     return await update.message.reply_text(text, reply_markup=markup, parse_mode="HTML")
 
 
