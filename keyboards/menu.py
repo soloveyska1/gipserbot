@@ -144,6 +144,17 @@ def admin_order_actions(oid, status):
     ]
     return InlineKeyboardMarkup(kb)
 
+
+def chat_kb(oid: int, is_admin: bool):
+    """Клавиатура для внутреннего чата заказа."""
+    back_cb = "adm_orders_list" if is_admin else f"my_order_{oid}"
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("🔒 Закрыть чат", callback_data="chat_close")],
+            [InlineKeyboardButton("🔙 Назад", callback_data=back_cb)],
+        ]
+    )
+
 def settings_kb():
     kb = [
         [InlineKeyboardButton("🎤 Речь", callback_data="set_price_speech"), InlineKeyboardButton("💻 Презентация", callback_data="set_price_pres")],

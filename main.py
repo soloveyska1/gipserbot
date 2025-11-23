@@ -93,10 +93,11 @@ def main():
         states={
             1: [
                 MessageHandler(filters.ALL & ~filters.COMMAND, chat.chat_process),
-                CallbackQueryHandler(chat.chat_start, pattern="^adm_chat_|^chat_order_")
+                CallbackQueryHandler(chat.chat_start, pattern="^adm_chat_|^chat_order_"),
+                CallbackQueryHandler(chat.cancel_chat, pattern="^chat_close$")
             ]
         },
-        fallbacks=[CallbackQueryHandler(chat.cancel_chat, pattern="^adm_order_|^my_order_")]
+        fallbacks=[CallbackQueryHandler(chat.cancel_chat, pattern="^adm_order_|^my_order_|^chat_close$")]
     )
     app.add_handler(chat_conv)
     

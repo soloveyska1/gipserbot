@@ -1,8 +1,9 @@
 from telegram import Update
 from telegram.ext import ContextTypes, ConversationHandler
 from database import core as db
+from database import pricing as pricing
 from keyboards import menu as kb
-from config import SERVICES, URGENCY_MULTIPLIER, PRICE_SPEECH, PRICE_PRES, PRICE_VIP, ADMIN_IDS
+from config import SERVICES, URGENCY_MULTIPLIER, ADMIN_IDS
 
 MSG_UPSELL = "🛡 <b>ДОПОЛНИТЕЛЬНАЯ ЗАЩИТА</b>\nХотите добавить броню к вашему заказу?"
 
@@ -89,10 +90,17 @@ async def get_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['upsell_pres'] = 0
     context.user_data['upsell_vip'] = 0
 
+    speech_price = await pricing.get_price("speech")
+    pres_price = await pricing.get_price("pres")
+    vip_price = await pricing.get_price("vip")
+    context.user_data['price_speech'] = speech_price
+    context.user_data['price_pres'] = pres_price
+    context.user_data['price_vip'] = vip_price
+
     await _safe_edit(
         query,
         MSG_UPSELL,
-        reply_markup=kb.upsell_kb(0, 0, 0, PRICE_SPEECH, PRICE_PRES, PRICE_VIP),
+        reply_markup=kb.upsell_kb(0, 0, 0, speech_price, pres_price, vip_price),
         parse_mode="HTML"
     )
     return UPSELL
@@ -110,16 +118,20 @@ async def get_upsell(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "upsell_done":
         # КАЛЬКУЛЯТОР
         d = context.user_data
-        base = SERVICES[d['o_type']]['base']
+        base = await pricing.get_price(f"srv_{d['o_type']}")
         
         # Наценки
         price = base
         if d.get('o_urgent'): price *= URGENCY_MULTIPLIER
         
         # Допы
-        if d.get('upsell_speech'): price += PRICE_SPEECH
-        if d.get('upsell_pres'): price += PRICE_PRES
-        if d.get('upsell_vip'): price += PRICE_VIP
+        speech_price = d.get('price_speech') or await pricing.get_price("speech")
+        pres_price = d.get('price_pres') or await pricing.get_price("pres")
+        vip_price = d.get('price_vip') or await pricing.get_price("vip")
+
+        if d.get('upsell_speech'): price += speech_price
+        if d.get('upsell_pres'): price += pres_price
+        if d.get('upsell_vip'): price += vip_price
         
         price = int(price) # Округляем
         context.user_data['o_price'] = price
@@ -160,8 +172,12 @@ async def get_upsell(update: Update, context: ContextTypes.DEFAULT_TYPE):
         p = context.user_data.get('upsell_pres', 0)
         v = context.user_data.get('upsell_vip', 0)
         
+        speech_price = context.user_data.get('price_speech') or await pricing.get_price("speech")
+        pres_price = context.user_data.get('price_pres') or await pricing.get_price("pres")
+        vip_price = context.user_data.get('price_vip') or await pricing.get_price("vip")
+
         await query.edit_message_reply_markup(
-            reply_markup=kb.upsell_kb(s, p, v, PRICE_SPEECH, PRICE_PRES, PRICE_VIP)
+            reply_markup=kb.upsell_kb(s, p, v, speech_price, pres_price, vip_price)
         )
         return UPSELL
 

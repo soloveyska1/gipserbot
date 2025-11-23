@@ -36,8 +36,13 @@ async def list_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def order_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
-    oid = int(query.data.split("_")[-1])
+
+    data = query.data
+    if data.startswith("set_status_"):
+        parts = data.split("_")
+        oid = int(parts[2])
+    else:
+        oid = int(data.split("_")[-1])
     o = await db.get_order(oid)
     
     txt = (
