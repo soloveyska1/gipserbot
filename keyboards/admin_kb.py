@@ -92,6 +92,35 @@ def main_menu():
     )
 
 
+def get_services_editor_kb(services: Iterable[dict]):
+    kb: list[list[InlineKeyboardButton]] = []
+    for svc in services:
+        label = f"{svc['name']} — {svc['price']}₽"
+        kb.append(
+            [
+                InlineKeyboardButton(
+                    label,
+                    callback_data=f"edit_svc_{svc['id']}",
+                )
+            ]
+        )
+    kb.append([InlineKeyboardButton("➕ Добавить услугу", callback_data="add_service")])
+    kb.append([InlineKeyboardButton("⬅️ Назад", callback_data="admin_main")])
+    return InlineKeyboardMarkup(kb)
+
+
+def service_actions_kb(service_id: int):
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("✏️ Название", callback_data=f"svc_edit_name_{service_id}")],
+            [InlineKeyboardButton("💰 Цена", callback_data=f"svc_edit_price_{service_id}")],
+            [InlineKeyboardButton("📝 Описание", callback_data=f"svc_edit_desc_{service_id}")],
+            [InlineKeyboardButton("🗑 Удалить", callback_data=f"svc_delete_{service_id}")],
+            [InlineKeyboardButton("⬅️ Назад", callback_data="admin_prices")],
+        ]
+    )
+
+
 def orders_list(orders, page: int = 0):
     kb = []
     start = page * 5

@@ -4,10 +4,9 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import BadRequest, Forbidden
 from telegram.ext import ContextTypes, ConversationHandler, MessageHandler, CallbackQueryHandler, CommandHandler, filters
 
-from config import ADMIN_IDS, SERVICES
+from config import ADMIN_IDS
 from database import core as db
 from database import db as crm_db
-from database import pricing
 from keyboards import admin_kb
 from keyboards.admin_kb import OrderCallback, StatsCallback, UserCallback
 
@@ -20,6 +19,12 @@ CLIENT_BALANCE_STATE = 6
 BROADCAST_CONTENT_STATE = 7
 BROADCAST_AUDIENCE_STATE = 8
 BROADCAST_CONFIRM_STATE = 9
+SERVICE_ADD_NAME_STATE = 10
+SERVICE_ADD_PRICE_STATE = 11
+SERVICE_ADD_DESC_STATE = 12
+SERVICE_EDIT_NAME_STATE = 13
+SERVICE_EDIT_PRICE_STATE = 14
+SERVICE_EDIT_DESC_STATE = 15
 ALLOWED_STATUSES = {
     "checking",
     "pending_pay",
@@ -609,75 +614,252 @@ async def set_order_status(update: Update, context: ContextTypes.DEFAULT_TYPE, o
     await show_order(update, context)
 
 
-# --- PRICES ---
-async def show_prices(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# --- SERVICES CRUD (PRICE LIST) ---
+async def show_services(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_admin(update.effective_user.id):
         return
+    crm_db.seed_services()
     query = update.callback_query
     if query:
         await query.answer()
 
-    prices = {}
-    for key, meta in SERVICES.items():
-        price_value = await pricing.get_price(f"srv_{key}")
-        prices[f"srv_{key}"] = {"title": f"{meta['emoji']} {meta['name']}", "price": price_value}
-    for extra_key, title in [("speech", "🎤 Речь"), ("pres", "💻 Презентация"), ("vip", "👑 VIP")]:
-        price_value = await pricing.get_price(extra_key)
-        prices[extra_key] = {"title": title, "price": price_value}
-
-    text = "⚙️ <b>ПРАЙС</b>\nВыберите позицию для изменения"
-    markup = admin_kb.prices_menu(prices)
+    services = await crm_db.get_services()
+    text_lines = ["⚙️ <b>ПРАЙС</b>", "Выберите услугу для редактирования или добавьте новую."]
+    markup = admin_kb.get_services_editor_kb(services)
     if query:
-        await _safe_edit(query, text, reply_markup=markup, parse_mode="HTML")
+        await _safe_edit(query, "\n".join(text_lines), reply_markup=markup, parse_mode="HTML")
     else:
-        await update.message.reply_text(text, reply_markup=markup, parse_mode="HTML")
+        await update.message.reply_text("\n".join(text_lines), reply_markup=markup, parse_mode="HTML")
 
 
-async def ask_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def show_service_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_admin(update.effective_user.id):
         return
     query = update.callback_query
+    if not query or not query.data:
+        return
     await query.answer()
-    key = query.data.replace("admin_price_", "")
-    context.user_data["price_key"] = key
-
-    current = await pricing.get_price(key)
-    prompt = f"💰 <b>Изменение цены</b>\nТекущая: {current} ₽\n\nВведите новую цену:"
-
-    await _safe_edit(query, prompt, reply_markup=admin_kb.cancel_kb("admin_prices"), parse_mode="HTML")
-    return PRICE_STATE
-
-
-async def save_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not _is_admin(update.effective_user.id):
-        return ConversationHandler.END
-    key = context.user_data.get("price_key")
-    if not key:
-        await update.message.reply_text("❌ Нет выбранной позиции")
-        return ConversationHandler.END
-
     try:
-        value = int(update.message.text)
+        service_id = int(query.data.replace("edit_svc_", ""))
     except ValueError:
-        await update.message.reply_text("❌ Введите число", reply_markup=admin_kb.cancel_kb("admin_prices"))
-        return PRICE_STATE
+        return
 
-    await pricing.set_price(key, value)
-    await update.message.reply_text("✅ Цена сохранена!", parse_mode="HTML")
-    await show_prices(update, context)
-    return ConversationHandler.END
+    service = await crm_db.get_service(service_id)
+    if not service:
+        await query.answer("Услуга не найдена", show_alert=True)
+        return
+
+    text = (
+        f"💼 <b>{service['name']}</b>\n"
+        f"💰 Цена: {service['price']} ₽\n"
+        f"📝 Описание: {service.get('description') or '—'}"
+    )
+    await _safe_edit(query, text, reply_markup=admin_kb.service_actions_kb(service_id), parse_mode="HTML")
 
 
-async def cancel_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start_add_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_admin(update.effective_user.id):
         return ConversationHandler.END
     query = update.callback_query
+    if query:
+        await query.answer()
     state = _StateWrapper(context)
     await state.clear()
+    await _safe_edit(query, "🆕 Введите название новой услуги:", reply_markup=admin_kb.cancel_kb("admin_prices"))
+    return SERVICE_ADD_NAME_STATE
+
+
+async def add_service_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    name = (update.message.text or "").strip()
+    if not name:
+        await update.message.reply_text("❌ Введите название")
+        return SERVICE_ADD_NAME_STATE
+    context.user_data["new_service_name"] = name
+    await update.message.reply_text(
+        "💰 Укажите цену (целое число в рублях):",
+        reply_markup=admin_kb.cancel_kb("admin_prices"),
+    )
+    return SERVICE_ADD_PRICE_STATE
+
+
+async def add_service_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        price = int(update.message.text)
+    except (TypeError, ValueError):
+        await update.message.reply_text("❌ Введите число", reply_markup=admin_kb.cancel_kb("admin_prices"))
+        return SERVICE_ADD_PRICE_STATE
+    context.user_data["new_service_price"] = price
+    await update.message.reply_text(
+        "📝 Добавьте описание услуги:",
+        reply_markup=admin_kb.cancel_kb("admin_prices"),
+    )
+    return SERVICE_ADD_DESC_STATE
+
+
+async def add_service_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    name = context.user_data.get("new_service_name")
+    price = context.user_data.get("new_service_price")
+    desc = update.message.text or ""
+    if not name or price is None:
+        await update.message.reply_text("❌ Данные не найдены, начните заново")
+        return ConversationHandler.END
+    await crm_db.add_service(name, int(price), desc)
+    state = _StateWrapper(context)
+    await state.clear()
+    await update.message.reply_text("✅ Услуга добавлена")
+    await show_services(update, context)
+    return ConversationHandler.END
+
+
+async def start_edit_service_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update.effective_user.id):
+        return ConversationHandler.END
+    query = update.callback_query
+    if not query:
+        return ConversationHandler.END
+    await query.answer()
+    try:
+        svc_id = int(query.data.replace("svc_edit_name_", ""))
+    except ValueError:
+        return ConversationHandler.END
+    context.user_data["edit_service_id"] = svc_id
+    await _safe_edit(
+        query,
+        "✏️ Введите новое название:",
+        reply_markup=admin_kb.cancel_kb(f"edit_svc_{svc_id}"),
+    )
+    return SERVICE_EDIT_NAME_STATE
+
+
+async def start_edit_service_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update.effective_user.id):
+        return ConversationHandler.END
+    query = update.callback_query
+    if not query:
+        return ConversationHandler.END
+    await query.answer()
+    try:
+        svc_id = int(query.data.replace("svc_edit_price_", ""))
+    except ValueError:
+        return ConversationHandler.END
+    context.user_data["edit_service_id"] = svc_id
+    await _safe_edit(
+        query,
+        "💰 Новая цена (руб):",
+        reply_markup=admin_kb.cancel_kb(f"edit_svc_{svc_id}"),
+    )
+    return SERVICE_EDIT_PRICE_STATE
+
+
+async def start_edit_service_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update.effective_user.id):
+        return ConversationHandler.END
+    query = update.callback_query
+    if not query:
+        return ConversationHandler.END
+    await query.answer()
+    try:
+        svc_id = int(query.data.replace("svc_edit_desc_", ""))
+    except ValueError:
+        return ConversationHandler.END
+    context.user_data["edit_service_id"] = svc_id
+    await _safe_edit(
+        query,
+        "📝 Новое описание:",
+        reply_markup=admin_kb.cancel_kb(f"edit_svc_{svc_id}"),
+    )
+    return SERVICE_EDIT_DESC_STATE
+
+
+async def save_service_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    svc_id = context.user_data.get("edit_service_id")
+    if not svc_id:
+        await update.message.reply_text("❌ Нет услуги")
+        return ConversationHandler.END
+    name = (update.message.text or "").strip()
+    if not name:
+        await update.message.reply_text("❌ Введите название")
+        return SERVICE_EDIT_NAME_STATE
+    await crm_db.update_service_name(int(svc_id), name)
+    await update.message.reply_text("✅ Название обновлено")
+    state = _StateWrapper(context)
+    await state.clear()
+    await show_service_actions_from_message(update, context, int(svc_id))
+    return ConversationHandler.END
+
+
+async def save_service_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    svc_id = context.user_data.get("edit_service_id")
+    if not svc_id:
+        await update.message.reply_text("❌ Нет услуги")
+        return ConversationHandler.END
+    try:
+        price = int(update.message.text)
+    except (TypeError, ValueError):
+        await update.message.reply_text("❌ Введите число")
+        return SERVICE_EDIT_PRICE_STATE
+    await crm_db.update_service_price(int(svc_id), price)
+    await update.message.reply_text("✅ Цена обновлена")
+    state = _StateWrapper(context)
+    await state.clear()
+    await show_service_actions_from_message(update, context, int(svc_id))
+    return ConversationHandler.END
+
+
+async def save_service_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    svc_id = context.user_data.get("edit_service_id")
+    if not svc_id:
+        await update.message.reply_text("❌ Нет услуги")
+        return ConversationHandler.END
+    desc = update.message.text or ""
+    await crm_db.update_service_description(int(svc_id), desc)
+    await update.message.reply_text("✅ Описание обновлено")
+    state = _StateWrapper(context)
+    await state.clear()
+    await show_service_actions_from_message(update, context, int(svc_id))
+    return ConversationHandler.END
+
+
+async def delete_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update.effective_user.id):
+        return
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+    try:
+        svc_id = int(query.data.replace("svc_delete_", ""))
+    except ValueError:
+        return
+    await crm_db.delete_service(svc_id)
+    await query.answer("Удалено")
+    await show_services(update, context)
+
+
+async def cancel_service_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state = _StateWrapper(context)
+    await state.clear()
+    query = update.callback_query
     if query:
         await query.answer("Отменено")
-    await show_prices(update, context)
+    if query and query.data and query.data.startswith("edit_svc_"):
+        await show_service_actions(update, context)
+    else:
+        await show_services(update, context)
     return ConversationHandler.END
+
+
+async def show_service_actions_from_message(update: Update, context: ContextTypes.DEFAULT_TYPE, svc_id: int):
+    service = await crm_db.get_service(svc_id)
+    if not service:
+        await update.message.reply_text("❌ Услуга не найдена")
+        return
+    text = (
+        f"💼 <b>{service['name']}</b>\n"
+        f"💰 Цена: {service['price']} ₽\n"
+        f"📝 Описание: {service.get('description') or '—'}"
+    )
+    await update.message.reply_text(text, reply_markup=admin_kb.service_actions_kb(svc_id), parse_mode="HTML")
 
 
 # --- STATS / BROADCAST ---
@@ -900,19 +1082,45 @@ def setup(app):
 
     app.add_handler(CallbackQueryHandler(back_to_main, pattern="^admin_main$"))
 
-    app.add_handler(CallbackQueryHandler(show_prices, pattern="^admin_prices$"))
-    price_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(ask_price, pattern="^admin_price_")],
+    app.add_handler(CallbackQueryHandler(show_services, pattern="^admin_prices$"))
+    app.add_handler(CallbackQueryHandler(show_service_actions, pattern=r"^edit_svc_\d+$"))
+    service_conv = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(start_add_service, pattern="^add_service$"),
+            CallbackQueryHandler(start_edit_service_name, pattern=r"^svc_edit_name_\d+$"),
+            CallbackQueryHandler(start_edit_service_price, pattern=r"^svc_edit_price_\d+$"),
+            CallbackQueryHandler(start_edit_service_desc, pattern=r"^svc_edit_desc_\d+$"),
+        ],
         states={
-            PRICE_STATE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, save_price),
-                CallbackQueryHandler(cancel_price, pattern="^admin_prices$|^admin_main$"),
-            ]
+            SERVICE_ADD_NAME_STATE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_service_name),
+                CallbackQueryHandler(cancel_service_conversation, pattern=r"^admin_prices$|^edit_svc_"),
+            ],
+            SERVICE_ADD_PRICE_STATE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_service_price),
+                CallbackQueryHandler(cancel_service_conversation, pattern=r"^admin_prices$|^edit_svc_"),
+            ],
+            SERVICE_ADD_DESC_STATE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_service_description),
+                CallbackQueryHandler(cancel_service_conversation, pattern=r"^admin_prices$|^edit_svc_"),
+            ],
+            SERVICE_EDIT_NAME_STATE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, save_service_name),
+                CallbackQueryHandler(cancel_service_conversation, pattern=r"^admin_prices$|^edit_svc_"),
+            ],
+            SERVICE_EDIT_PRICE_STATE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, save_service_price),
+                CallbackQueryHandler(cancel_service_conversation, pattern=r"^admin_prices$|^edit_svc_"),
+            ],
+            SERVICE_EDIT_DESC_STATE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, save_service_desc),
+                CallbackQueryHandler(cancel_service_conversation, pattern=r"^admin_prices$|^edit_svc_"),
+            ],
         },
-        fallbacks=[CallbackQueryHandler(cancel_price, pattern="^admin_prices$|^admin_main$")],
+        fallbacks=[CallbackQueryHandler(cancel_service_conversation, pattern=r"^admin_prices$|^edit_svc_")],
         per_message=False,
     )
-    app.add_handler(price_conv)
+    app.add_handler(service_conv)
 
     balance_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(start_balance_change, pattern=r"^ord:(give|take):")],

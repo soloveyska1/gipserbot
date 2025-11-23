@@ -55,37 +55,127 @@ def _ensure_promo_tables():
     conn.close()
 
 
-def seed_services():
-    """Заполняет базовый каталог услуг с салун-неймингом для админки/расчётов."""
+def _ensure_services_table():
     conn = _get_conn()
     cur = conn.cursor()
     cur.execute(
         """
-        CREATE TABLE IF NOT EXISTS services_catalog (
-            key TEXT PRIMARY KEY,
+        CREATE TABLE IF NOT EXISTS services (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT,
             price INTEGER,
             description TEXT
         )
         """
     )
+    conn.commit()
+    conn.close()
 
-    services = [
-        ("master", "Магистерская (Собственное Ранчо)", 55000, "Полный эскорт до защиты, как за своим ранчо."),
-        ("diploma_gold", "Диплом (Золотая жила)", 35000, "Бережная добыча всех аргументов для блестящей защиты."),
-        ("course_poker", "Курсовая (Партия в покер)", 15000, "Ставим на выигрышную комбинацию: план, методичка, антиплагиат."),
-        ("essay_fling", "Эссе (Лёгкий флирт)", 5000, "Быстро, красиво и без лишних обязательств."),
-        ("report_family", "Отчёт (Семейный ужин)", 8000, "Произвести впечатление на комиссию, как на строгих родственников."),
-        ("exam_risk", "Экзамен (Игра с судьбой)", 4000, "Адреналин с гарантиями: готовим билеты и решения вовремя."),
+
+def seed_services():
+    """Заполняет салунный каталог услуг, если таблица пустая."""
+    _ensure_services_table()
+    conn = _get_conn()
+    cur = conn.cursor()
+    count = cur.execute("SELECT COUNT(*) FROM services").fetchone()[0]
+    if count:
+        conn.close()
+        return
+
+    defaults = [
+        ("Эссе (Меткий выстрел)", 4500, "Быстро, четко, прямо в яблочко."),
+        ("Курсовая (Партия в покер)", 15000, "Требует стратегии. Мы соберем Роял Флеш."),
+        ("Диплом (Золотая жила)", 35000, "Твой главный трофей. Мы добудем чистое золото."),
+        ("Магистерская (Собственное Ранчо)", 55000, "Фундаментальный труд. Владение территорией."),
+        ("Отчет (Верный мустанг)", 12000, "Рабочая лошадка вывезет к зачету."),
+        ("Экзамен (Дикое Родео)", 20000, "Удержись в седле. Адреналин и победа."),
+        ("Презентация (Карта сокровищ)", 2500, "Яркий путь к цели."),
+        ("Речь (Тост за удачу)", 2500, "Слова, которые заставят всех слушать."),
+        ("VIP (Ключ от города)", 5000, "Приоритет и открытые двери."),
     ]
 
-    for key, name, price, desc in services:
-        cur.execute(
-            "INSERT OR REPLACE INTO services_catalog (key, name, price, description) VALUES (?, ?, ?, ?)",
-            (key, name, price, desc),
-        )
-
+    cur.executemany(
+        "INSERT INTO services (name, price, description) VALUES (?, ?, ?)", defaults
+    )
     conn.commit()
+    conn.close()
+
+
+async def get_services() -> List[Dict[str, Any]]:
+    _ensure_services_table()
+    conn = _get_conn()
+    conn.row_factory = sqlite3.Row
+    cur = conn.execute(
+        "SELECT id, name, price, description FROM services ORDER BY id"
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+async def get_service(service_id: int) -> Dict[str, Any] | None:
+    _ensure_services_table()
+    conn = _get_conn()
+    conn.row_factory = sqlite3.Row
+    cur = conn.execute(
+        "SELECT id, name, price, description FROM services WHERE id = ?",
+        (service_id,),
+    )
+    row = cur.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+async def add_service(name: str, price: int, description: str) -> int:
+    _ensure_services_table()
+    conn = _get_conn()
+    with conn:
+        cur = conn.execute(
+            "INSERT INTO services (name, price, description) VALUES (?, ?, ?)",
+            (name, price, description),
+        )
+    conn.close()
+    return cur.lastrowid
+
+
+async def update_service_name(service_id: int, name: str):
+    _ensure_services_table()
+    conn = _get_conn()
+    with conn:
+        conn.execute(
+            "UPDATE services SET name = ? WHERE id = ?",
+            (name, service_id),
+        )
+    conn.close()
+
+
+async def update_service_price(service_id: int, price: int):
+    _ensure_services_table()
+    conn = _get_conn()
+    with conn:
+        conn.execute(
+            "UPDATE services SET price = ? WHERE id = ?",
+            (price, service_id),
+        )
+    conn.close()
+
+
+async def update_service_description(service_id: int, description: str):
+    _ensure_services_table()
+    conn = _get_conn()
+    with conn:
+        conn.execute(
+            "UPDATE services SET description = ? WHERE id = ?",
+            (description, service_id),
+        )
+    conn.close()
+
+
+async def delete_service(service_id: int):
+    _ensure_services_table()
+    conn = _get_conn()
+    with conn:
+        conn.execute("DELETE FROM services WHERE id = ?", (service_id,))
     conn.close()
 
 
