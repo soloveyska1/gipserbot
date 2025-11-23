@@ -26,8 +26,25 @@ def _column_exists(cursor, table, column):
 
 def _ensure_column(cursor, table, column, definition):
     if not _column_exists(cursor, table, column):
-        cursor.execute(f"ALTER TABLE {table} ADD COLUMN {definition}")
-        logging.info("[DB] Добавлен столбец %s в %s", column, table)
+        try:
+            cursor.execute(f"ALTER TABLE {table} ADD COLUMN {definition}")
+            logging.info("[DB] Добавлен столбец %s в %s", column, table)
+            return
+        except sqlite3.OperationalError as exc:
+            if "non-constant default" not in str(exc).lower() or "default" not in definition.lower():
+                raise
+
+            base_def = definition.split(" DEFAULT ", 1)[0]
+            cursor.execute(f"ALTER TABLE {table} ADD COLUMN {base_def}")
+            default_part = definition.split(" DEFAULT ", 1)[1]
+            cursor.execute(
+                f"UPDATE {table} SET {column} = {default_part} WHERE {column} IS NULL"
+            )
+            logging.info(
+                "[DB] Добавлен столбец %s в %s без DEFAULT из-за ограничения SQLite; значения заполнены",
+                column,
+                table,
+            )
 
 
 def _ensure_user_columns(cursor):
@@ -246,7 +263,7 @@ async def add_user(user_id, username, full_name, referrer_id=0):
         if cursor.fetchone():
             return False
         conn.execute(
-            "INSERT INTO users (user_id, username, full_name, referrer_id) VALUES (?, ?, ?, ?)",
+            "INSERT INTO users (user_id, username, full_name, referrer_id, joined_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
             (user_id, username, full_name, referrer_id),
         )
         conn.commit()

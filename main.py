@@ -4,7 +4,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 from config import BOT_TOKEN, LOGS_DIR
 from database.core import init_db
 from handlers import client, order_flow, admin_god, chat
-from error_handler import error_handler
+from handlers.error_handler import error_handler
 
 # Настройка логов
 if not os.path.exists(LOGS_DIR):
