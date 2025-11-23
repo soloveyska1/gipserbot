@@ -4,6 +4,7 @@ from telegram.ext import ContextTypes, ConversationHandler
 from database import core as db
 from keyboards import menu as kb
 from keyboards import admin_kb
+from keyboards.admin_kb import OrderCallback
 from config import ADMIN_ID
 
 CHAT_STEP = 1
@@ -38,8 +39,12 @@ async def chat_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return ConversationHandler.END
         
         data = query.data
-        # adm_chat_OID or chat_order_OID
-        if "adm_chat_" in data:
+        # adm_chat_OID or chat_order_OID or ord:chat:OID
+        if data.startswith(OrderCallback.prefix + ":"):
+            cb = OrderCallback.parse(data)
+            oid = cb.id if cb else 0
+            is_admin = True
+        elif "adm_chat_" in data:
             oid = int(data.split("_")[-1])
             is_admin = True
         else:
@@ -144,9 +149,9 @@ async def cancel_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📝 Тема: {o['topic']}\n"
         )
         if query:
-            await _safe_edit(query, txt, reply_markup=admin_kb.order_actions(oid, o['status']), parse_mode="HTML")
+            await _safe_edit(query, txt, reply_markup=admin_kb.order_actions(oid, o['status'], o['user_id']), parse_mode="HTML")
         else:
-            await update.message.reply_text(txt, reply_markup=admin_kb.order_actions(oid, o['status']), parse_mode="HTML")
+            await update.message.reply_text(txt, reply_markup=admin_kb.order_actions(oid, o['status'], o['user_id']), parse_mode="HTML")
     else:
         # Redirect to client order view
         o = await db.get_order(oid)

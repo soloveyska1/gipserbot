@@ -6,8 +6,10 @@ from config import ADMIN_IDS, SERVICES
 from database import core as db
 from database import pricing
 from keyboards import admin_kb
+from keyboards.admin_kb import OrderCallback
 
 PRICE_STATE = 1
+BALANCE_STATE = 2
 ALLOWED_STATUSES = {
     "checking",
     "pending_pay",
@@ -44,6 +46,13 @@ async def entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("💀 <b>GOD MODE ACTIVATED</b>", reply_markup=admin_kb.main_menu(), parse_mode="HTML")
 
 
+def _parse_order_callback(update: Update) -> OrderCallback | None:
+    query = update.callback_query
+    if not query or not query.data:
+        return None
+    return OrderCallback.parse(query.data)
+
+
 async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if query:
@@ -52,16 +61,12 @@ async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # --- ORDERS ---
-async def show_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def show_orders(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int = 0):
     if not _is_admin(update.effective_user.id):
         return
     query = update.callback_query
     if query:
         await query.answer()
-
-    page = 0
-    if query and query.data.startswith("admin_orders_page_"):
-        page = int(query.data.split("_")[-1])
 
     orders = await db.get_all_orders(limit=100)
     text = f"📦 <b>АКТИВНЫЕ ЗАКАЗЫ</b> (стр. {page+1})"
@@ -71,12 +76,15 @@ async def show_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(text, reply_markup=admin_kb.orders_list(orders, page), parse_mode="HTML")
 
 
-async def show_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def show_order(update: Update, context: ContextTypes.DEFAULT_TYPE, order_id: int | None = None):
     if not _is_admin(update.effective_user.id):
         return
     query = update.callback_query
-    await query.answer()
-    oid = int(query.data.split("_")[-1])
+    if query:
+        await query.answer()
+    oid = order_id if order_id is not None else (_parse_order_callback(update).id if _parse_order_callback(update) else None)
+    if oid is None:
+        return
     order = await db.get_order(oid)
 
     status_label = {
@@ -107,25 +115,109 @@ async def show_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Списано баллов: -{points_used} 💎\n"
         f"<b>ИТОГО К ОПЛАТЕ: {final_price} ₽</b>\n"
     )
-    await _safe_edit(query, txt, reply_markup=admin_kb.order_actions(oid, order['status']), parse_mode="HTML")
+    await _safe_edit(query, txt, reply_markup=admin_kb.order_actions(oid, order['status'], order['user_id']), parse_mode="HTML")
 
 
-async def set_order_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def show_user_profile(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, from_order: int | None = None):
     if not _is_admin(update.effective_user.id):
         return
     query = update.callback_query
+    if query:
+        await query.answer()
+
+    user = await db.get_user(user_id)
+    balance = user.get("balance", 0) if user else 0
+    txt = (
+        f"👤 <b>Профиль пользователя</b>\n"
+        f"ID: <a href='tg://user?id={user_id}'>{user_id}</a>\n"
+        f"Баланс: {balance} 💎\n"
+    )
+
+    kb = admin_kb.user_profile_kb(user_id, from_order)
+    if query:
+        await _safe_edit(query, txt, reply_markup=kb, parse_mode="HTML")
+    else:
+        await update.message.reply_text(txt, reply_markup=kb, parse_mode="HTML")
+
+
+async def start_balance_change(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update.effective_user.id):
+        return ConversationHandler.END
+    query = update.callback_query
+    if not query:
+        return ConversationHandler.END
+    cb = _parse_order_callback(update)
+    if not cb:
+        return ConversationHandler.END
     await query.answer()
-    parts = query.data.split("_")
-    oid = int(parts[3])
-    status = "_".join(parts[4:])
+    context.user_data["balance_target"] = cb.id
+    context.user_data["balance_direction"] = cb.action  # give or take
+    order_id = int(cb.payload) if cb.payload else 0
+    context.user_data["balance_order"] = order_id
+    prompt = "💎 Введите количество баллов для начисления:" if cb.action == "give" else "💎 Введите количество баллов для списания:"
+    cancel_cb = OrderCallback(action="user", id=cb.id, payload=str(order_id or 0)).pack()
+    await _safe_edit(query, prompt, reply_markup=admin_kb.cancel_kb(cancel_cb))
+    return BALANCE_STATE
+
+
+async def save_balance_change(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update.effective_user.id):
+        return ConversationHandler.END
+    target = context.user_data.get("balance_target")
+    direction = context.user_data.get("balance_direction")
+    order_id = context.user_data.get("balance_order") or 0
+    if not target or direction not in {"give", "take"}:
+        await update.message.reply_text("❌ Нет выбранного пользователя")
+        return ConversationHandler.END
+    try:
+        amount = int(update.message.text)
+    except ValueError:
+        await update.message.reply_text("❌ Введите число", reply_markup=admin_kb.cancel_kb(OrderCallback(action="user", id=target, payload=str(order_id)).pack()))
+        return BALANCE_STATE
+
+    delta = amount if direction == "give" else -amount
+    await db.adjust_balance(target, delta, "Ручная корректировка")
+    notice = f"✅ Баланс изменён на {delta}"
+    await update.message.reply_text(notice, parse_mode="HTML")
+    try:
+        await context.bot.send_message(
+            target,
+            f"🏜️ Шериф поправил баланс на {delta}. Текущий баланс уточните в профиле.",
+        )
+    except Exception:
+        pass
+
+    await show_user_profile(update, context, target, order_id if order_id else None)
+    return ConversationHandler.END
+
+
+async def cancel_balance_change(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    cb = _parse_order_callback(update)
+    if query:
+        await query.answer("Отменено")
+    if cb:
+        order_id = int(cb.payload) if cb.payload else 0
+        await show_user_profile(update, context, cb.id, order_id if order_id else None)
+    return ConversationHandler.END
+
+
+async def set_order_status(update: Update, context: ContextTypes.DEFAULT_TYPE, oid: int, status: str):
+    if not _is_admin(update.effective_user.id):
+        return
+    query = update.callback_query
+    if query:
+        await query.answer()
 
     if status not in ALLOWED_STATUSES:
-        await query.answer("Недопустимый статус", show_alert=True)
+        if query:
+            await query.answer("Недопустимый статус", show_alert=True)
         return
 
     order_before = await db.get_order(oid)
     if not order_before:
-        await query.answer("Заказ не найден", show_alert=True)
+        if query:
+            await query.answer("Заказ не найден", show_alert=True)
         return
     if status == "cancel":
         refunded = await db.refund_points_to_user(oid)
@@ -271,13 +363,27 @@ async def broadcast_placeholder(update: Update, context: ContextTypes.DEFAULT_TY
         await _safe_edit(query, "📢 РАССЫЛКА скоро будет доступна", reply_markup=admin_kb.main_menu())
 
 
+async def order_callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cb = _parse_order_callback(update)
+    if not cb:
+        return
+    if cb.action == "list":
+        await show_orders(update, context, page=cb.id)
+    elif cb.action == "view":
+        await show_order(update, context, order_id=cb.id)
+    elif cb.action == "status":
+        await set_order_status(update, context, oid=cb.id, status=cb.payload)
+    elif cb.action == "user":
+        from_order = int(cb.payload) if cb.payload else None
+        await show_user_profile(update, context, user_id=cb.id, from_order=from_order)
+    elif cb.action in {"give", "take"}:
+        await start_balance_change(update, context)
+
+
 def setup(app):
     app.add_handler(CommandHandler("admin", entry))
 
     app.add_handler(CallbackQueryHandler(back_to_main, pattern="^admin_main$"))
-    app.add_handler(CallbackQueryHandler(show_orders, pattern="^admin_orders$|^admin_orders_page_"))
-    app.add_handler(CallbackQueryHandler(show_order, pattern="^admin_order_"))
-    app.add_handler(CallbackQueryHandler(set_order_status, pattern="^admin_set_status_"))
 
     app.add_handler(CallbackQueryHandler(show_prices, pattern="^admin_prices$"))
     price_conv = ConversationHandler(
@@ -292,6 +398,21 @@ def setup(app):
         per_message=False,
     )
     app.add_handler(price_conv)
+
+    balance_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(start_balance_change, pattern=r"^ord:(give|take):")],
+        states={
+            BALANCE_STATE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, save_balance_change),
+                CallbackQueryHandler(cancel_balance_change, pattern=r"^ord:user:"),
+            ]
+        },
+        fallbacks=[CallbackQueryHandler(cancel_balance_change, pattern=r"^ord:user:")],
+        per_message=False,
+    )
+    app.add_handler(balance_conv)
+
+    app.add_handler(CallbackQueryHandler(order_callback_router, pattern=r"^ord:(list|view|status|user|give|take):"))
 
     app.add_handler(CallbackQueryHandler(show_stats, pattern="^admin_stats$"))
     app.add_handler(CallbackQueryHandler(broadcast_placeholder, pattern="^admin_broadcast$"))

@@ -3,7 +3,7 @@ import os
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ConversationHandler
 from config import BOT_TOKEN, LOGS_DIR
 from database.core import init_db
-from handlers import client, order_flow, chat, admin
+from handlers import client, order_flow, chat, admin, promos
 from handlers.error_handler import error_handler
 
 # Настройка логов
@@ -67,14 +67,15 @@ def main():
 
     # === АДМИНКА ===
     admin.setup(app)
+    promos.setup(app)
 
     # === ЧАТ ===
     chat_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(chat.chat_start, pattern="^adm_chat_|^chat_order_")],
+        entry_points=[CallbackQueryHandler(chat.chat_start, pattern="^adm_chat_|^chat_order_|^ord:chat:")],
         states={
             1: [
                 MessageHandler(filters.ALL & ~filters.COMMAND, chat.chat_process),
-                CallbackQueryHandler(chat.chat_start, pattern="^adm_chat_|^chat_order_"),
+                CallbackQueryHandler(chat.chat_start, pattern="^adm_chat_|^chat_order_|^ord:chat:"),
                 CallbackQueryHandler(chat.cancel_chat, pattern="^chat_close$")
             ]
         },
