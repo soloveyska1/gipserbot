@@ -6,6 +6,15 @@ from config import ADMIN_ID
 
 CHAT_STEP = 1
 
+async def _safe_edit(query, text, **kwargs):
+    msg = query.message
+    if msg and msg.text:
+        return await query.edit_message_text(text, **kwargs)
+    if msg and msg.caption:
+        return await query.edit_message_caption(caption=text, **kwargs)
+    return await query.message.reply_text(text, **kwargs)
+
+
 async def chat_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     try:
@@ -47,11 +56,16 @@ async def chat_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         txt += "\n✍️ <i>Напишите сообщение или отправьте файл...</i>"
         
-        await query.edit_message_text(txt, reply_markup=kb.chat_kb(oid, is_admin), parse_mode="HTML")
+        await _safe_edit(query, txt, reply_markup=kb.chat_kb(oid, is_admin), parse_mode="HTML")
         return CHAT_STEP
     except Exception as e:
         print(f"ERROR in chat_start: {e}")
-        try: await query.edit_message_text(f"❌ Ошибка чата: {e}", reply_markup=kb.main_kb(update.effective_user.id))
+        try:
+            await _safe_edit(
+                query,
+                f"❌ Ошибка чата: {e}",
+                reply_markup=kb.main_kb(update.effective_user.id),
+            )
         except: pass
         return ConversationHandler.END
 
@@ -124,7 +138,7 @@ async def cancel_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📝 Тема: {o['topic']}\n"
         )
         if query:
-            await query.edit_message_text(txt, reply_markup=kb.admin_order_actions(oid, o['status']), parse_mode="HTML")
+            await _safe_edit(query, txt, reply_markup=kb.admin_order_actions(oid, o['status']), parse_mode="HTML")
         else:
             await update.message.reply_text(txt, reply_markup=kb.admin_order_actions(oid, o['status']), parse_mode="HTML")
     else:
@@ -140,7 +154,7 @@ async def cancel_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📊 Статус: {o['status']}\n"
         )
         if query:
-            await query.edit_message_text(txt, reply_markup=kb.order_details_kb(oid), parse_mode="HTML")
+            await _safe_edit(query, txt, reply_markup=kb.order_details_kb(oid), parse_mode="HTML")
         else:
             await update.message.reply_text(txt, reply_markup=kb.order_details_kb(oid), parse_mode="HTML")
             

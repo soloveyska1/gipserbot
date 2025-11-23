@@ -121,6 +121,7 @@ async def accept_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await utils.send_typing(context, query.message.chat_id)
     await asyncio.sleep(1.5)
     await _safe_edit(
+        query,
         "🤝 Шериф записал твое согласие. Добро пожаловать в салун!",
         reply_markup=kb.main_kb(query.from_user.id),
         parse_mode="HTML",
