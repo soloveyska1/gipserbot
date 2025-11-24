@@ -1075,6 +1075,16 @@ async def order_callback_router(update: Update, context: ContextTypes.DEFAULT_TY
         await show_user_profile(update, context, user_id=cb.id, from_order=from_order)
     elif cb.action in {"give", "take"}:
         await start_balance_change(update, context)
+    elif cb.action == "hard_delete":
+        await db.delete_order_permanently(cb.id)
+        query = update.callback_query
+        if query:
+            await _safe_edit(
+                query,
+                f"💀 Заказ #{cb.id} и чат удалены навсегда.",
+                reply_markup=admin_kb.orders_list(await db.get_all_orders(), page=0),
+                parse_mode="HTML",
+            )
 
 
 def setup(app):
@@ -1136,7 +1146,7 @@ def setup(app):
     )
     app.add_handler(balance_conv)
 
-    app.add_handler(CallbackQueryHandler(order_callback_router, pattern=r"^ord:(list|view|status|user|give|take):"))
+    app.add_handler(CallbackQueryHandler(order_callback_router, pattern=r"^ord:(list|view|status|user|give|take|hard_delete):"))
 
     # CRM clients
     app.add_handler(CallbackQueryHandler(show_clients, pattern=r"^usr:list:"))

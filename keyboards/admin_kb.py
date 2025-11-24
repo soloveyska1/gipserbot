@@ -225,6 +225,12 @@ def order_actions(oid: int, status: str, user_id: int | None = None):
                     callback_data=OrderCallback(action="user", id=user_id or 0, payload=str(oid)).pack(),
                 )
             ],
+            [
+                InlineKeyboardButton(
+                    "💀 DELETE PERMANENTLY",
+                    callback_data=OrderCallback(action="hard_delete", id=oid).pack(),
+                )
+            ],
             [InlineKeyboardButton("⬅️ Назад к списку", callback_data=OrderCallback(action="list", id=0).pack())],
         ]
     )

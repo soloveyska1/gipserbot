@@ -99,6 +99,7 @@ def main():
     app.add_handler(CallbackQueryHandler(client.my_history, pattern="^my_history$"))
     app.add_handler(CallbackQueryHandler(client.my_transactions, pattern="^my_transactions$"))
     app.add_handler(CallbackQueryHandler(client.my_order, pattern="^my_order_"))
+    app.add_handler(CallbackQueryHandler(client.hide_order_confirm, pattern="^hide_order_"))
 
     # === ОТЗЫВЫ ===
     review_conv = ConversationHandler(

@@ -85,12 +85,14 @@ def history_kb(orders):
 
 
 def order_details_kb(oid, status="review"):
-    return InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton("💬 ЧАТ С МЕНЕДЖЕРОМ", callback_data=f"chat_order_{oid}")],
-            [InlineKeyboardButton("🔙 Назад", callback_data="my_history")],
-        ]
-    )
+    rows = [[InlineKeyboardButton("💬 ЧАТ С МЕНЕДЖЕРОМ", callback_data=f"chat_order_{oid}")]]
+
+    if status in {"done", "cancel", "completed"}:
+        rows.append([InlineKeyboardButton("🗑 Убрать из истории", callback_data=f"hide_order_{oid}")])
+
+    rows.append([InlineKeyboardButton("🔙 Назад", callback_data="my_history")])
+
+    return InlineKeyboardMarkup(rows)
 
 
 def back_kb(callback_data):

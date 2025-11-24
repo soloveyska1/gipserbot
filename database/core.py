@@ -623,6 +623,16 @@ async def hide_order_for_user(order_id, hide=True):
         conn.close()
 
 
+async def delete_order_permanently(order_id: int):
+    conn = await get_connection()
+    try:
+        conn.execute("DELETE FROM messages WHERE order_id = ?", (order_id,))
+        conn.execute("DELETE FROM orders WHERE id = ?", (order_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 async def update_order_price(order_id, price):
     conn = await get_connection()
     try:

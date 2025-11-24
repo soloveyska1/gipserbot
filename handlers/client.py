@@ -263,12 +263,12 @@ async def submit_promo_code(update: Update, context: Any):
 
 async def _render_price_menu(update: Update, context: Any, via_callback: bool = False):
     services = await catalog_db.get_all_services()
-    
+
     # Текст стал дружелюбнее и чище
     text = (
-        "🏷 <b>ПРЕЙСКУРАНТ</b>\n\n"
-        "Выберите трофей, за которым мы отправимся охотиться.\n"
-        "<i>Нажмите на услугу, чтобы узнать детали и оформить заказ.</i>"
+        "🏷 <b>МЕНЮ УСЛУГ</b>\n\n"
+        "Каждая позиция — готовый набор под ключ.\n"
+        "<i>Жми на нужный вариант, дальше проведём за руку.</i>"
     )
 
     if not services:
@@ -425,6 +425,21 @@ async def my_order(update: Update, context: Any):
         f"💬 Комментарий шерифа: {admin_comment}"
     )
     await _safe_edit(query, txt, reply_markup=kb.order_details_kb(oid, o.get('status')), parse_mode="HTML")
+
+
+async def hide_order_confirm(update: Update, context: Any):
+    query = update.callback_query
+    await query.answer()
+
+    oid = int(query.data.split("_")[-1])
+    await db.hide_order_for_user(oid, True)
+
+    await _safe_edit(
+        query,
+        "🗑 Заказ скрыт из истории. Остальные дела ждут тебя в архиве.",
+        reply_markup=kb.profile_kb(),
+        parse_mode="HTML",
+    )
 
 async def my_transactions(update: Update, context: Any):
     query = update.callback_query
