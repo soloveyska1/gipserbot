@@ -121,11 +121,26 @@ def service_actions_kb(service_id: int):
     )
 
 
-def orders_list(orders, page: int = 0):
+def orders_list(orders, page: int = 0, current_filter: str = "all"):
     kb = []
     start = page * 5
     end = start + 5
     current = orders[start:end]
+
+    def _tab(label: str, key: str) -> InlineKeyboardButton:
+        is_active = current_filter == key
+        text = f"[✅ {label}]" if is_active else label
+        cb = f"ord:filter:{key}" if key != "search" else "ord:search"
+        return InlineKeyboardButton(text, callback_data=cb)
+
+    kb.append(
+        [
+            _tab("📁 Все", "all"),
+            _tab("⚡️ Актив", "active"),
+            _tab("💰 Оплата", "payment"),
+            _tab("🔍 Поиск", "search"),
+        ]
+    )
 
     status_emoji = {
         "checking": "🟡",

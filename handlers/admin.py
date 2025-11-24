@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import BadRequest, Forbidden
@@ -25,6 +26,7 @@ SERVICE_ADD_DESC_STATE = 12
 SERVICE_EDIT_NAME_STATE = 13
 SERVICE_EDIT_PRICE_STATE = 14
 SERVICE_EDIT_DESC_STATE = 15
+ADMIN_SEARCH_STATE = 16
 ALLOWED_STATUSES = {
     "checking",
     "pending_pay",
@@ -404,19 +406,81 @@ async def send_user_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # --- ORDERS ---
-async def show_orders(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int = 0):
+def _deadline_marker(deadline_value: str | None) -> tuple[str, str]:
+    if not deadline_value:
+        return "⚪️", "—"
+    text = str(deadline_value).strip()
+    if text.lower() == "urgent":
+        return "🔴", text
+    try:
+        deadline_dt = datetime.strptime(text, "%d.%m.%Y")
+        today = datetime.utcnow().date()
+        days_left = (deadline_dt.date() - today).days
+        if days_left < 0:
+            return "☠️", text
+        if days_left <= 3:
+            return "🔴", text
+        if days_left <= 7:
+            return "🟡", text
+        return "🟢", text
+    except Exception:
+        return "⚪️", text
+
+
+async def show_orders(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int = 0, orders_override=None, heading: str | None = None):
     if not _is_admin(update.effective_user.id):
         return
     query = update.callback_query
     if query:
         await query.answer()
 
-    orders = await db.get_all_orders(limit=100)
-    text = f"📦 <b>АКТИВНЫЕ ЗАКАЗЫ</b> (стр. {page+1})"
-    if query:
-        await _safe_edit(query, text, reply_markup=admin_kb.orders_list(orders, page), parse_mode="HTML")
+    current_filter = context.user_data.get("admin_filter", "all")
+    context.user_data.setdefault("admin_filter", current_filter)
+    if current_filter not in {"all", "active", "payment", "new", "search"}:
+        current_filter = "all"
+    status_filter = None if current_filter in {"all", "search"} else current_filter
+    search_query = context.user_data.get("admin_search_query") if current_filter == "search" else None
+
+    orders = orders_override
+    if orders is None:
+        orders = await db.get_all_orders(limit=100, status_filter=status_filter, search_query=search_query)
+
+    start = page * 5
+    end = start + 5
+    current_slice = orders[start:end]
+
+    filter_names = {
+        "all": "ВСЕ",
+        "active": "АКТИВНЫЕ",
+        "payment": "ОПЛАТА",
+        "new": "НОВЫЕ",
+        "search": "ПОИСК",
+    }
+    if heading:
+        title = heading
+    elif current_filter == "search" and search_query:
+        title = f"📦 <b>ПОИСК: {search_query}</b> (стр. {page+1})"
     else:
-        await update.message.reply_text(text, reply_markup=admin_kb.orders_list(orders, page), parse_mode="HTML")
+        title = f"📦 <b>ЗАКАЗЫ: {filter_names.get(current_filter, 'ВСЕ')}</b> (стр. {page+1})"
+
+    lines = [title]
+    if not current_slice:
+        lines.append("Пока пусто — попробуйте другой фильтр или поиск.")
+    else:
+        for o in current_slice:
+            marker, deadline_text = _deadline_marker(o.get("deadline"))
+            price_display = o.get("final_price", o.get("price", 0))
+            lines.append(
+                f"#{o['id']} | {o.get('service_type', '—')} | {o.get('status', '—')}\n"
+                f"💰 {price_display} ₽ | ⏳ {marker} {deadline_text}"
+            )
+
+    kb = admin_kb.orders_list(orders, page, current_filter=current_filter)
+    rendered_text = "\n".join(lines)
+    if query:
+        await _safe_edit(query, rendered_text, reply_markup=kb, parse_mode="HTML")
+    else:
+        await update.message.reply_text(rendered_text, reply_markup=kb, parse_mode="HTML")
 
 
 async def show_order(update: Update, context: ContextTypes.DEFAULT_TYPE, order_id: int | None = None):
@@ -459,6 +523,48 @@ async def show_order(update: Update, context: ContextTypes.DEFAULT_TYPE, order_i
         f"<b>ИТОГО К ОПЛАТЕ: {final_price} ₽</b>\n"
     )
     await _safe_edit(query, txt, reply_markup=admin_kb.order_actions(oid, order['status'], order['user_id']), parse_mode="HTML")
+
+
+async def handle_order_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update.effective_user.id):
+        return ConversationHandler.END
+    query = update.callback_query
+    if not query:
+        return ConversationHandler.END
+    if query.data:
+        filter_key = query.data.split(":")[-1]
+        context.user_data["admin_filter"] = filter_key
+        if filter_key != "search":
+            context.user_data.pop("admin_search_query", None)
+    await show_orders(update, context, page=0)
+    return ConversationHandler.END
+
+
+async def start_order_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update.effective_user.id):
+        return ConversationHandler.END
+    query = update.callback_query
+    if query:
+        await query.answer()
+    context.user_data["admin_filter"] = "search"
+    context.user_data["admin_search_query"] = ""
+    kb = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("⬅️ Назад", callback_data="ord:filter:all")]]
+    )
+    await _safe_edit(query, "🔍 Введите номер заказа или никнейм клиента:", reply_markup=kb)
+    return ADMIN_SEARCH_STATE
+
+
+async def process_order_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update.effective_user.id):
+        return ConversationHandler.END
+    query_text = (update.message.text or "").strip()
+    orders = await db.get_all_orders(limit=100, search_query=query_text)
+    context.user_data["admin_filter"] = "search"
+    context.user_data["admin_search_query"] = query_text
+    heading = f"📦 <b>ПОИСК: {query_text or '—'}</b>"
+    await show_orders(update, context, page=0, orders_override=orders, heading=heading)
+    return ConversationHandler.END
 
 
 async def show_user_profile(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, from_order: int | None = None):
@@ -1082,7 +1188,11 @@ async def order_callback_router(update: Update, context: ContextTypes.DEFAULT_TY
             await _safe_edit(
                 query,
                 f"💀 Заказ #{cb.id} и чат удалены навсегда.",
-                reply_markup=admin_kb.orders_list(await db.get_all_orders(), page=0),
+                reply_markup=admin_kb.orders_list(
+                    await db.get_all_orders(status_filter=context.user_data.get("admin_filter")),
+                    page=0,
+                    current_filter=context.user_data.get("admin_filter", "all"),
+                ),
                 parse_mode="HTML",
             )
 
@@ -1146,6 +1256,25 @@ def setup(app):
     )
     app.add_handler(balance_conv)
 
+    search_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(start_order_search, pattern="^ord:search$")],
+        states={
+            ADMIN_SEARCH_STATE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_order_search),
+                CallbackQueryHandler(handle_order_filter, pattern=r"^ord:filter:(all|active|payment|new)$"),
+            ]
+        },
+        fallbacks=[
+            CallbackQueryHandler(handle_order_filter, pattern=r"^ord:filter:(all|active|payment|new)$"),
+            CallbackQueryHandler(back_to_main, pattern="^admin_main$"),
+        ],
+        per_message=False,
+        allow_reentry=True,
+    )
+    app.add_handler(search_conv)
+
+    app.add_handler(CallbackQueryHandler(handle_order_filter, pattern=r"^ord:filter:(all|active|payment|new)$"))
+    app.add_handler(CallbackQueryHandler(start_order_search, pattern="^ord:search$"))
     app.add_handler(CallbackQueryHandler(order_callback_router, pattern=r"^ord:(list|view|status|user|give|take|hard_delete):"))
 
     # CRM clients

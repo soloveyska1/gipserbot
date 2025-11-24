@@ -637,17 +637,46 @@ async def get_user_orders(user_id):
         conn.close()
 
 
-async def get_all_orders(limit=100):
+async def get_all_orders(limit=100, status_filter=None, search_query=None):
     conn = await get_connection()
     try:
-        cursor = conn.execute(
+        base_query = [
             """
-            SELECT id, user_id, service_type, topic, deadline, status, price, promo_code,
-                   COALESCE(original_price, price), COALESCE(points_used, 0), COALESCE(final_price, price)
-            FROM orders WHERE status != 'done' ORDER BY id DESC LIMIT ?
-            """,
-            (limit,),
-        )
+            SELECT o.id, o.user_id, o.service_type, o.topic, o.deadline, o.status, o.price, o.promo_code,
+                   COALESCE(o.original_price, o.price), COALESCE(o.points_used, 0), COALESCE(o.final_price, o.price),
+                   u.username, u.full_name
+            FROM orders o
+            LEFT JOIN users u ON u.user_id = o.user_id
+            """
+        ]
+
+        conditions = []
+        params = []
+
+        if status_filter == "active":
+            conditions.append("o.status IN ('work', 'checking', 'norm_control', 'edits')")
+        elif status_filter == "payment":
+            conditions.append("o.status IN ('pending_pay')")
+        elif status_filter == "new":
+            conditions.append("o.status IN ('new', 'checking')")
+
+        if search_query is not None:
+            search_query = search_query.strip()
+            if search_query.isdigit():
+                conditions.append("o.id = ?")
+                params.append(int(search_query))
+            elif search_query:
+                like_pattern = f"%{search_query}%"
+                conditions.append("(u.username LIKE ? OR u.full_name LIKE ?)")
+                params.extend([like_pattern, like_pattern])
+
+        if conditions:
+            base_query.append("WHERE " + " AND ".join(conditions))
+
+        base_query.append("ORDER BY o.id DESC LIMIT ?")
+        params.append(limit)
+
+        cursor = conn.execute(" ".join(base_query), tuple(params))
         orders = []
         for row in cursor.fetchall():
             orders.append(
@@ -658,10 +687,13 @@ async def get_all_orders(limit=100):
                     "price": row[6],
                     "service_type": row[2],
                     "topic": row[3],
+                    "deadline": row[4],
                     "promo_code": row[7],
                     "original_price": row[8],
                     "points_used": row[9],
                     "final_price": row[10],
+                    "username": row[11],
+                    "full_name": row[12],
                 }
             )
         return orders
