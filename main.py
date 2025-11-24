@@ -48,7 +48,15 @@ def main():
     catalog_db.seed_services()
     
     print("🚀 Запуск бота...")
-    app = Application.builder().token(BOT_TOKEN).job_queue(JobQueue()).build()
+    job_queue = None
+    try:
+        job_queue = JobQueue()
+    except RuntimeError as exc:
+        logging.warning("JobQueue unavailable: %s", exc)
+    builder = Application.builder().token(BOT_TOKEN)
+    if job_queue:
+        builder = builder.job_queue(job_queue)
+    app = builder.build()
 
     # --- OBSERVABILITY: глобальный проводник ---
     app.add_handler(TypeHandler(Update, utils.wiretap_logger, block=False), group=-1)
