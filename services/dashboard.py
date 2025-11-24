@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from datetime import datetime
 
 from telegram import Bot
@@ -18,6 +19,7 @@ class LiveDashboard:
         self.message_id: int | None = None
         self.chat_id = LOG_CHANNEL_ID
         self.lock = asyncio.Lock()
+        self.logger = logging.getLogger(__name__)
 
     async def _ensure_message(self, bot: Bot):
         if not self.chat_id:
@@ -61,4 +63,8 @@ class LiveDashboard:
     def attach(self, application):
         if not self.chat_id:
             return
-        application.job_queue.run_repeating(self.tick, interval=60, first=5, name="live_pulse")
+        job_queue = getattr(application, "job_queue", None)
+        if not job_queue:
+            self.logger.warning("JobQueue is not available. Install PTB with job-queue extras or APScheduler to enable live dashboard updates.")
+            return
+        job_queue.run_repeating(self.tick, interval=60, first=5, name="live_pulse")
