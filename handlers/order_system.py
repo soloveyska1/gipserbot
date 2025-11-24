@@ -108,7 +108,9 @@ async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'uid': user.id, 'type': d['o_type'], 'topic': d['o_topic'],
         'deadline': "Urgent" if d['o_urgent'] else "Normal",
         'urgent': d['o_urgent'], 'vip': 0, 'upsell': d['o_upsell'],
-        'price': d['o_price']
+        'final_price': d['o_price'],
+        'original_price': d['o_price'],
+        'points_used': 0,
     }
     oid = await db.create_order(order_data)
     

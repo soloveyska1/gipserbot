@@ -1,4 +1,5 @@
 from telegram import Update
+from telegram.error import BadRequest
 from telegram.ext import ContextTypes, ConversationHandler, MessageHandler, filters
 from database import core as db
 from database import pricing as logic
@@ -6,16 +7,36 @@ from keyboards import menu as kb
 from config import ADMIN_IDS, SERVICES
 from utils import log_action
 
+
+async def _safe_edit(query, text, **kwargs):
+    """Безопасное редактирование сообщений или подписей (когда исходник — фото)."""
+    msg = query.message
+    try:
+        if msg and msg.text:
+            return await query.edit_message_text(text, **kwargs)
+        if msg and msg.caption:
+            return await query.edit_message_caption(caption=text, **kwargs)
+    except BadRequest as exc:
+        # Игнорируем попытку редактировать без изменений или неподходящий тип контента
+        if "not modified" not in str(exc).lower():
+            raise
+    return await query.message.reply_text(text, **kwargs)
+
 # --- ENTRY ---
 async def entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Проверка: если юзера НЕТ в списке админов - игнорируем
     if update.effective_user.id not in ADMIN_IDS: return
-    await update.callback_query.edit_message_text("💀 <b>GOD MODE ACTIVATED</b>", reply_markup=kb.admin_main(), parse_mode="HTML")
+    await _safe_edit(
+        update.callback_query,
+        "💀 <b>GOD MODE ACTIVATED</b>",
+        reply_markup=kb.admin_main(),
+        parse_mode="HTML",
+    )
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u, o, m = await db.get_stats()
     txt = f"📊 <b>СТАТИСТИКА</b>\n\n👤 Юзеров: {u}\n📦 Заказов: {o}\n💵 Оборот: {m} ₽"
-    await update.callback_query.edit_message_text(txt, reply_markup=kb.admin_main(), parse_mode="HTML")
+    await _safe_edit(update.callback_query, txt, reply_markup=kb.admin_main(), parse_mode="HTML")
 
 # --- ORDER MANAGEMENT ---
 async def list_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -27,34 +48,51 @@ async def list_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
         page = int(query.data.split("_")[-1])
     
     orders = await db.get_all_orders(limit=100) # Get last 100
-    await query.edit_message_text(
-        f"📦 <b>АКТИВНЫЕ ЗАКАЗЫ (Стр. {page+1})</b>", 
+    await _safe_edit(
+        query,
+        f"📦 <b>АКТИВНЫЕ ЗАКАЗЫ (Стр. {page+1})</b>",
         reply_markup=kb.admin_orders_list_kb(orders, page),
-        parse_mode="HTML"
+        parse_mode="HTML",
     )
 
 async def order_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
-    oid = int(query.data.split("_")[-1])
+
+    data = query.data
+    if data.startswith("set_status_"):
+        parts = data.split("_")
+        oid = int(parts[2])
+    else:
+        oid = int(data.split("_")[-1])
     o = await db.get_order(oid)
     
+    status_label = {
+        "checking": "🟡 На проверке",
+        "pending_pay": "💳 Ждёт оплаты",
+        "work": "⚙️ В работе",
+        "norm_control": "🧭 Нормконтроль",
+        "edits": "✏️ Правки",
+        "suspended": "⏸ Приостановлен",
+        "done": "✅ Выполнен",
+        "cancel": "❌ Отменён",
+    }
+
     txt = (
         f"📦 <b>ЗАКАЗ #{oid}</b>\n"
         f"👤 Юзер: {o['user_id']}\n"
         f"📚 Тип: {o['service_type']}\n"
         f"💰 Цена: {o['price']} ₽\n"
-        f"📊 Статус: {o['status']}\n"
+        f"📊 Статус: {status_label.get(o['status'], o['status'])}\n"
         f"📝 Тема: {o['topic']}\n"
     )
-    await query.edit_message_text(txt, reply_markup=kb.admin_order_actions(oid, o['status']), parse_mode="HTML")
+    await _safe_edit(query, txt, reply_markup=kb.admin_order_actions(oid, o['status']), parse_mode="HTML")
 
 async def set_order_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     parts = query.data.split("_")
     oid = int(parts[2])
-    status = parts[3]
+    status = "_".join(parts[3:])
     
     await db.update_order_status(oid, status)
     
@@ -64,6 +102,9 @@ async def set_order_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "work": "⚙️ <b>Ваш заказ #{oid} взят в работу!</b>\nМы начали. Ожидайте.",
         "done": "✅ <b>Заказ #{oid} ГОТОВ!</b>\nПринимайте работу.",
         "pending_pay": "💳 <b>По заказу #{oid} ожидается оплата.</b>",
+        "norm_control": "🧭 <b>Заказ #{oid} на нормоконтроле.</b>\nПроверяем соответствие требованиям.",
+        "edits": "✏️ <b>Заказ #{oid} на правках.</b>\nИсправляем замечания.",
+        "suspended": "⏸ <b>Заказ #{oid} приостановлен.</b>\nСвяжитесь с шерифом для деталей.",
         "cancel": "❌ <b>Заказ #{oid} отменен.</b>"
     }
     if status in status_msg:
@@ -83,10 +124,11 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
         page = int(query.data.split("_")[-1])
     
     users = await db.get_all_users()
-    await query.edit_message_text(
-        f"👥 <b>ПОЛЬЗОВАТЕЛИ (Стр. {page+1})</b>", 
+    await _safe_edit(
+        query,
+        f"👥 <b>ПОЛЬЗОВАТЕЛИ (Стр. {page+1})</b>",
         reply_markup=kb.admin_users_list_kb(users, page),
-        parse_mode="HTML"
+        parse_mode="HTML",
     )
 
 async def user_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -103,7 +145,7 @@ async def user_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🚫 Бан: {'ДА' if u['is_banned'] else 'НЕТ'}\n"
         f"🔗 Реферрер: {u['referrer_id']}\n"
     )
-    await query.edit_message_text(txt, reply_markup=kb.admin_user_actions(uid, u['is_banned']), parse_mode="HTML")
+    await _safe_edit(query, txt, reply_markup=kb.admin_user_actions(uid, u['is_banned']), parse_mode="HTML")
 
 async def toggle_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -122,7 +164,12 @@ async def toggle_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- SETTINGS ---
 SET_PRICE_STEP = 1
 async def settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.edit_message_text("⚙️ <b>НАСТРОЙКИ ЦЕН</b>\nВыберите, что изменить:", reply_markup=kb.settings_kb(), parse_mode="HTML")
+    await _safe_edit(
+        update.callback_query,
+        "⚙️ <b>НАСТРОЙКИ ЦЕН</b>\nВыберите, что изменить:",
+        reply_markup=kb.settings_kb(),
+        parse_mode="HTML",
+    )
 
 async def set_price_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -132,7 +179,11 @@ async def set_price_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['price_key'] = key
     
     current = await logic.get_price(key)
-    await query.edit_message_text(f"💰 <b>Изменение цены [{key}]</b>\nТекущая: {current} ₽\n\nВведите новую цену:", parse_mode="HTML")
+    await _safe_edit(
+        query,
+        f"💰 <b>Изменение цены [{key}]</b>\nТекущая: {current} ₽\n\nВведите новую цену:",
+        parse_mode="HTML",
+    )
     return SET_PRICE_STEP
 
 async def set_price_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
