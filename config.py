@@ -4,6 +4,8 @@ import os
 BOT_TOKEN = "7387413773:AAFSXCt7sCd7ODu0Rtwn4_7ogdlt90EvZZ0"
 # Канал для отзывов
 REVIEW_CHANNEL_ID = -1003241736635
+# Канал для логов и крэшей
+LOG_CHANNEL_ID = -1003300275622
 
 # СПИСОК админов
 ADMIN_IDS = [872379852] 

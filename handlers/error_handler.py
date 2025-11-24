@@ -1,10 +1,13 @@
-import logging
-import traceback
 import html
 import json
+import logging
+import traceback
+
 from telegram import Update
 from telegram.ext import ContextTypes
-from config import ADMIN_IDS
+
+from config import ADMIN_IDS, LOG_CHANNEL_ID
+import utils
 
 # Настройка логгера
 logger = logging.getLogger(__name__)
@@ -23,15 +26,21 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
         f"<pre>{tb_string}</pre>"
     )
 
-    # Уведомляем первого админа
-    admin_id = ADMIN_IDS[0] if ADMIN_IDS else None
-    if admin_id:
+    user_id = update.effective_user.id if isinstance(update, Update) and update.effective_user else 0
+    recent_actions = utils.get_recent_actions(user_id)
+    steps_block = "\n".join(recent_actions[-10:]) if recent_actions else "—"
+
+    crash_report = (
+        "#CRASH\n"
+        f"User: {user_id}\n"
+        f"Last actions:\n{steps_block}\n\n"
+        f"{message}"
+    )
+
+    target = LOG_CHANNEL_ID or (ADMIN_IDS[0] if ADMIN_IDS else None)
+    if target:
         try:
-            # Разбиваем сообщение, если оно слишком длинное
-            if len(message) > 4096:
-                for x in range(0, len(message), 4096):
-                    await context.bot.send_message(chat_id=admin_id, text=message[x:x+4096], parse_mode="HTML")
-            else:
-                await context.bot.send_message(chat_id=admin_id, text=message, parse_mode="HTML")
+            for x in range(0, len(crash_report), 3500):
+                await context.bot.send_message(chat_id=target, text=crash_report[x:x+3500], parse_mode="HTML")
         except Exception:
             pass

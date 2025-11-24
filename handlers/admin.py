@@ -1,5 +1,11 @@
 import asyncio
-from datetime import datetime
+import io
+from datetime import datetime, timedelta
+
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import BadRequest, Forbidden
@@ -10,6 +16,7 @@ from database import core as db
 from database import db as crm_db
 from keyboards import admin_kb
 from keyboards.admin_kb import OrderCallback, StatsCallback, UserCallback
+import utils
 
 PRICE_STATE = 1
 BALANCE_STATE = 2
@@ -42,6 +49,38 @@ ALLOWED_STATUSES = {
 
 def _is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
+
+
+async def watch_user_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update.effective_user.id):
+        return
+
+    args = context.args if hasattr(context, "args") else None
+    if not update.message:
+        return
+    if not args:
+        await update.message.reply_text("Использование: /watch <user_id> или /watch stop [user_id]")
+        return
+
+    command = args[0].lower()
+    admin_id = update.effective_user.id
+
+    if command in {"stop", "off"}:
+        target = int(args[1]) if len(args) > 1 and args[1].isdigit() else None
+        utils.remove_watch(admin_id, target)
+        msg = "👁 Наблюдение остановлено." if target is None else f"👁 Наблюдение за {target} остановлено."
+        await update.message.reply_text(msg)
+        return
+
+    if not command.isdigit():
+        await update.message.reply_text("Укажи ID пользователя цифрами.")
+        return
+
+    target_id = int(command)
+    utils.add_watch(admin_id, target_id)
+    await update.message.reply_text(
+        f"🔎 Подслушиваем #USER_{target_id}. Все шаги будут приходить сюда.", parse_mode="HTML"
+    )
 
 
 class _StateWrapper:
@@ -1079,6 +1118,55 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(text, reply_markup=markup, parse_mode="HTML")
 
 
+async def send_charts(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update.effective_user.id):
+        return
+    query = update.callback_query
+    if query:
+        await query.answer("Строим графики...")
+
+    metrics = await db.get_daily_analytics(30)
+    start_day = datetime.utcnow().date() - timedelta(days=29)
+
+    labels = []
+    users_points = []
+    revenue_points = []
+    for i in range(30):
+        day = start_day + timedelta(days=i)
+        key = day.isoformat()
+        labels.append(day.strftime("%d.%m"))
+        users_points.append(metrics.get("users", {}).get(key, 0))
+        revenue_points.append(metrics.get("revenue", {}).get(key, 0))
+
+    fig, ax1 = plt.subplots(figsize=(10, 5))
+    ax2 = ax1.twinx()
+
+    ax1.bar(labels, users_points, color="#5DADE2", label="Новые пользователи")
+    ax2.plot(labels, revenue_points, color="#E67E22", label="Оборот", linewidth=2)
+
+    ax1.set_ylabel("Новые пользователи")
+    ax2.set_ylabel("Оборот, ₽")
+    ax1.set_xlabel("Дни")
+    ax1.set_xticklabels(labels, rotation=45, ha="right")
+    ax1.legend(loc="upper left")
+    ax2.legend(loc="upper right")
+    ax1.grid(True, linestyle="--", alpha=0.3)
+
+    buf = io.BytesIO()
+    plt.tight_layout()
+    plt.savefig(buf, format="png", bbox_inches="tight")
+    buf.seek(0)
+    plt.close(fig)
+
+    target_chat = query.message.chat_id if query and query.message else update.effective_chat.id
+    await context.bot.send_photo(chat_id=target_chat, photo=buf, caption="📈 Метрики за последние 30 дней")
+
+    if query:
+        await _safe_edit(query, "📈 Графики готовы. Смотри вложение.", reply_markup=admin_kb.main_menu())
+    else:
+        await update.message.reply_text("📈 Графики готовы. Смотри вложение.", reply_markup=admin_kb.main_menu())
+
+
 async def start_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_admin(update.effective_user.id):
         return ConversationHandler.END
@@ -1230,10 +1318,12 @@ async def order_callback_router(update: Update, context: ContextTypes.DEFAULT_TY
 
 def setup(app):
     app.add_handler(CommandHandler("admin", entry))
+    app.add_handler(CommandHandler("watch", watch_user_logs))
 
     app.add_handler(CallbackQueryHandler(back_to_main, pattern="^admin_main$"))
 
     app.add_handler(CallbackQueryHandler(show_services, pattern="^admin_prices$"))
+    app.add_handler(CallbackQueryHandler(send_charts, pattern="^admin_charts$"))
     app.add_handler(CallbackQueryHandler(show_service_actions, pattern=r"^edit_svc_\d+$"))
     app.add_handler(CallbackQueryHandler(delete_service, pattern=r"^svc_delete_\d+$"))
     service_conv = ConversationHandler(

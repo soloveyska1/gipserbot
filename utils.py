@@ -2,10 +2,16 @@ import logging
 import os
 import asyncio
 import random
+from collections import defaultdict, deque
 from datetime import datetime
 from html import escape
+from typing import Deque, DefaultDict, Set
+
+from telegram import Update
 from telegram.constants import ChatAction
-from config import LOGS_DIR
+from telegram.ext import ContextTypes
+
+from config import LOGS_DIR, LOG_CHANNEL_ID
 
 # Настройка логирования
 os.makedirs(LOGS_DIR, exist_ok=True)
@@ -16,6 +22,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# --- WIRES & OBSERVABILITY ---
+USER_ACTIONS: DefaultDict[int, Deque[str]] = defaultdict(lambda: deque(maxlen=10))
+WATCHERS: DefaultDict[int, Set[int]] = defaultdict(set)
+
 # Добавляем запись в файл
 file_handler = logging.FileHandler(os.path.join(LOGS_DIR, 'bot.log'))
 file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
@@ -24,6 +34,67 @@ logger.addHandler(file_handler)
 async def log_action(update, context, action):
     user = update.effective_user
     logger.info(f"User {user.id} ({user.username}): {action}")
+
+
+def _compact(text: str | None, max_len: int = 200) -> str:
+    if not text:
+        return "—"
+    text = str(text)
+    return text if len(text) <= max_len else text[: max_len - 1] + "…"
+
+
+async def wiretap_logger(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Global interceptor that mirrors every step into the log channel and watcher feeds."""
+
+    user_id = update.effective_user.id if update.effective_user else 0
+    action = "Update"
+    data: str | None = None
+
+    if getattr(update, "callback_query", None):
+        action = "CallbackQuery"
+        data = update.callback_query.data
+    elif getattr(update, "message", None):
+        action = "Message"
+        data = update.message.text or update.message.caption
+    elif getattr(update, "inline_query", None):
+        action = "InlineQuery"
+        data = update.inline_query.query
+
+    entry = f"#USER_{user_id} | {action} | {_compact(data)}"
+    USER_ACTIONS[user_id].append(entry)
+
+    if LOG_CHANNEL_ID:
+        try:
+            await context.bot.send_message(LOG_CHANNEL_ID, entry)
+        except Exception:
+            logger.debug("Wiretap send failed", exc_info=True)
+
+    if user_id in WATCHERS:
+        for admin_id in list(WATCHERS[user_id]):
+            try:
+                await context.bot.send_message(admin_id, entry)
+            except Exception:
+                continue
+
+
+def get_recent_actions(user_id: int) -> list[str]:
+    return list(USER_ACTIONS.get(user_id, []))
+
+
+def add_watch(admin_id: int, target_id: int):
+    WATCHERS[target_id].add(admin_id)
+
+
+def remove_watch(admin_id: int, target_id: int | None = None):
+    if target_id is None:
+        for uid in list(WATCHERS.keys()):
+            WATCHERS[uid].discard(admin_id)
+            if not WATCHERS[uid]:
+                WATCHERS.pop(uid, None)
+        return
+    WATCHERS[target_id].discard(admin_id)
+    if not WATCHERS[target_id]:
+        WATCHERS.pop(target_id, None)
 
 def format_contact_link(contact: str) -> str:
     """Превращает текст контакта в кликабельную ссылку"""

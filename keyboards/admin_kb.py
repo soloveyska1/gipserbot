@@ -88,6 +88,7 @@ def main_menu():
             [InlineKeyboardButton("⚙️ Прайс", callback_data="admin_prices")],
             [InlineKeyboardButton("📢 Рассылка", callback_data="admin_broadcast")],
             [InlineKeyboardButton("👀 Статистика", callback_data=StatsCallback(action="view").pack())],
+            [InlineKeyboardButton("📈 Графики", callback_data="admin_charts")],
         ]
     )
 

@@ -1014,3 +1014,38 @@ async def get_stats():
         return u_count, o_count, money
     finally:
         conn.close()
+
+
+async def get_daily_analytics(days: int = 30):
+    conn = await get_connection()
+    try:
+        since_date = (datetime.utcnow() - timedelta(days=days - 1)).date()
+
+        users_rows = conn.execute(
+            """
+            SELECT DATE(joined_at) as d, COUNT(*)
+            FROM users
+            WHERE joined_at IS NOT NULL AND DATE(joined_at) >= DATE(?)
+            GROUP BY DATE(joined_at)
+            ORDER BY DATE(joined_at)
+            """,
+            (since_date,),
+        ).fetchall()
+
+        revenue_rows = conn.execute(
+            """
+            SELECT DATE(created_at) as d, SUM(COALESCE(final_price, price))
+            FROM orders
+            WHERE status != 'cancel' AND created_at IS NOT NULL AND DATE(created_at) >= DATE(?)
+            GROUP BY DATE(created_at)
+            ORDER BY DATE(created_at)
+            """,
+            (since_date,),
+        ).fetchall()
+
+        return {
+            "users": {row[0]: row[1] for row in users_rows},
+            "revenue": {row[0]: row[1] or 0 for row in revenue_rows},
+        }
+    finally:
+        conn.close()

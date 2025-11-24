@@ -88,6 +88,10 @@ def profile_kb(bonus_status: dict | None = None):
         [
             [InlineKeyboardButton("📦 Мои заказы", callback_data="my_history")],
             [InlineKeyboardButton(btn_text, callback_data="daily_bonus")],
+            [
+                InlineKeyboardButton("🤜 Дуэль (100💎)", callback_data="duel_start"),
+                InlineKeyboardButton("🔮 Оракул дедлайнов", callback_data="deadline_oracle"),
+            ],
             [InlineKeyboardButton("🗄 Мой Сейф", callback_data="my_safe")],
             [InlineKeyboardButton("📜 История золота", callback_data="my_transactions")],
             [InlineKeyboardButton("🎟 Ввести промокод", callback_data="enter_promo")],
@@ -142,6 +146,26 @@ def safe_kb(files):
 
     rows.append([InlineKeyboardButton("🔙 Назад", callback_data="profile")])
     return InlineKeyboardMarkup(rows)
+
+
+def duel_kb():
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("🔫 Колт", callback_data="duel_pick_colt")],
+            [InlineKeyboardButton("🧨 Динамит", callback_data="duel_pick_dynamite")],
+            [InlineKeyboardButton("➰ Лассо", callback_data="duel_pick_lasso")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="open_profile")],
+        ]
+    )
+
+
+def oracle_kb():
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("🚀 Запустить заказ", callback_data="order_start")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="open_profile")],
+        ]
+    )
 
 
 def back_kb(callback_data):

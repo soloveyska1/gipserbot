@@ -34,6 +34,20 @@ CODE_OF_HONOR = (
     "Никто не узнает, что мы вели дела. Тайна переписки охраняется законом прерий."
 )
 
+TAROT_CARDS = [
+    "🌵 <b>The Hanging Deadline</b> — дедлайн уже качается на веревке. Усилим команду, чтобы снять его вовремя.",
+    "🕯 <b>The Midnight Rider</b> — ночные рейды спасут ситуацию. Подготовим черновики без промедления.",
+    "🏜 <b>The Dry Inbox</b> — тишина перед бурей. Пока никто не шлёт правки, самое время запустить заказ.",
+    "🌪 <b>The Dust Storm</b> — поток задач приближается. Захвати салун раньше остальных, чтобы успеть в срок.",
+    "🤠 <b>The Sheriff’s Favor</b> — удача улыбается. Закрепим успех, пока фортуна на стороне ковбоя.",
+]
+
+DUEL_BEATS = {
+    "colt": "lasso",
+    "lasso": "dynamite",
+    "dynamite": "colt",
+}
+
 
 class _StateWrapper:
     def __init__(self, context: Any):
@@ -327,6 +341,118 @@ async def play_daily_bonus(update: Update, context: Any):
     )
     markup = await _profile_markup(query.from_user.id)
     await _play_slots_animation(query, reward_text, markup)
+
+
+def _duel_outcome(user_choice: str, bot_choice: str) -> str:
+    if user_choice == bot_choice:
+        return "draw"
+    return "win" if DUEL_BEATS.get(user_choice) == bot_choice else "lose"
+
+
+async def start_duel(update: Update, context: Any):
+    query = update.callback_query
+    await query.answer()
+
+    allowed = await _ensure_rules(update, context)
+    if not allowed:
+        return ConversationHandler.END
+
+    user = await db.get_user(query.from_user.id)
+    balance = user.get("balance", 0) if user else 0
+    if balance < 100:
+        return await _safe_edit(
+            query,
+            "💸 Для дуэли нужно минимум 100 баллов. Попробуй подкопить или сорвать бонус.",
+            reply_markup=await _profile_markup(query.from_user.id),
+            parse_mode="HTML",
+        )
+
+    await _safe_edit(
+        query,
+        "🤜 <b>Дуэль за 100 баллов!</b>\nВыбирай оружие: колт, динамит или лассо.",
+        reply_markup=kb.duel_kb(),
+        parse_mode="HTML",
+    )
+
+
+async def resolve_duel(update: Update, context: Any):
+    query = update.callback_query
+    await query.answer()
+
+    allowed = await _ensure_rules(update, context)
+    if not allowed:
+        return ConversationHandler.END
+
+    choice_key = query.data.split("_")[-1]
+    if choice_key not in DUEL_BEATS:
+        return ConversationHandler.END
+
+    user = await db.get_user(query.from_user.id)
+    balance = user.get("balance", 0) if user else 0
+    if balance < 100:
+        return await _safe_edit(
+            query,
+            "💸 Нужна ставка 100 баллов. Пополните баланс или сыграйте позже.",
+            reply_markup=await _profile_markup(query.from_user.id),
+            parse_mode="HTML",
+        )
+
+    bot_choice = random.choice(list(DUEL_BEATS.keys()))
+    outcome = _duel_outcome(choice_key, bot_choice)
+
+    for frame in ["🤜 3...", "🤜 2...", "🤜 1...", "🤜 BANG!"]:
+        await _safe_edit(query, frame)
+        await asyncio.sleep(0.45)
+
+    delta = 0
+    flavor = ""
+    if outcome == "win":
+        delta = 100
+        flavor = "🥃 Шериф угощает — победа за тобой!"
+    elif outcome == "lose":
+        delta = -100
+        flavor = "💥 Пуля ушла в молоко. Баллы списаны."
+    else:
+        flavor = "🤝 Ничья. Оба ковбоя остались при своём."
+
+    if delta:
+        await db.adjust_balance(query.from_user.id, delta, "duel_game")
+
+    result_label = {"win": "Победа", "lose": "Поражение", "draw": "Ничья"}[outcome]
+
+    summary = (
+        f"🤜 <b>Дуэль окончена</b>\n"
+        f"Ты выбрал: <b>{choice_key.title()}</b>\n"
+        f"Оппонент: <b>{bot_choice.title()}</b>\n"
+        f"Результат: <b>{result_label}</b>\n"
+        f"Изменение баланса: {delta:+} 💎\n\n"
+        f"{flavor}"
+    )
+
+    await _safe_edit(
+        query,
+        summary,
+        reply_markup=await _profile_markup(query.from_user.id),
+        parse_mode="HTML",
+    )
+
+
+async def draw_deadline_oracle(update: Update, context: Any):
+    query = update.callback_query
+    await query.answer()
+
+    allowed = await _ensure_rules(update, context)
+    if not allowed:
+        return ConversationHandler.END
+
+    card = random.choice(TAROT_CARDS)
+    text = (
+        "🔮 <b>ОРАКУЛ ДЕДЛАЙНОВ</b>\n\n"
+        f"{card}\n\n"
+        "📌 Дерни за курок — оформи заказ и забронируй слот команды."
+    )
+
+    await _safe_edit(query, text, reply_markup=kb.oracle_kb(), parse_mode="HTML")
 
 
 async def open_safe(update: Update, context: Any):
