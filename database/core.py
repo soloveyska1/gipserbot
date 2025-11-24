@@ -194,6 +194,13 @@ def _ensure_order_columns(cursor):
     _ensure_column(cursor, "orders", "original_price", "original_price INTEGER DEFAULT 0")
     _ensure_column(cursor, "orders", "points_used", "points_used INTEGER DEFAULT 0")
     _ensure_column(cursor, "orders", "final_price", "final_price INTEGER DEFAULT 0")
+    _ensure_column(cursor, "users", "achievements", "achievements TEXT DEFAULT ''")
+    _ensure_column(cursor, "users", "last_seen", "last_seen TIMESTAMP")
+
+
+def _ensure_action_log_columns(cursor):
+    _ensure_column(cursor, "action_logs", "event_type", "event_type TEXT")
+    _ensure_column(cursor, "action_logs", "meta", "meta TEXT")
 
 
 def init_db():
@@ -320,6 +327,8 @@ def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER,
                 action_text TEXT,
+                event_type TEXT,
+                meta TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """
@@ -327,6 +336,7 @@ def init_db():
 
         _ensure_user_columns(cursor)
         _ensure_order_columns(cursor)
+        _ensure_action_log_columns(cursor)
 
         cursor.execute(
             "INSERT OR IGNORE INTO settings (key, value) VALUES ('maintenance_mode', '0')"
@@ -936,10 +946,13 @@ async def add_transaction(user_id, amount, reason):
         conn.close()
 
 
-async def add_action_log(user_id, action_text):
+async def add_action_log(user_id, action_text, event_type: str | None = None, meta: str | None = None):
     conn = await get_connection()
     try:
-        conn.execute("INSERT INTO action_logs (user_id, action_text) VALUES (?, ?)", (user_id, action_text))
+        conn.execute(
+            "INSERT INTO action_logs (user_id, action_text, event_type, meta) VALUES (?, ?, ?, ?)",
+            (user_id, action_text, event_type, meta),
+        )
         conn.commit()
     finally:
         conn.close()
@@ -949,10 +962,182 @@ async def get_action_logs(limit=100):
     conn = await get_connection()
     try:
         cursor = conn.execute(
-            "SELECT user_id, action_text, created_at FROM action_logs ORDER BY id DESC LIMIT ?",
+            "SELECT user_id, action_text, event_type, meta, created_at FROM action_logs ORDER BY id DESC LIMIT ?",
             (limit,),
         )
         return cursor.fetchall()
+    finally:
+        conn.close()
+
+
+async def get_user_behavior_snapshot(user_id: int) -> dict:
+    conn = await get_connection()
+    try:
+        user_row = conn.execute(
+            "SELECT total_spent, orders_count, bonus_streak FROM users WHERE user_id = ?",
+            (user_id,),
+        ).fetchone() or (0, 0, 0)
+
+        total_spent, orders_count, bonus_streak = user_row
+
+        total_actions = conn.execute(
+            "SELECT COUNT(*) FROM action_logs WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()[0]
+
+        price_clicks = conn.execute(
+            "SELECT COUNT(*) FROM action_logs WHERE user_id = ? AND (event_type = 'price_list' OR action_text LIKE 'event:price_list%')",
+            (user_id,),
+        ).fetchone()[0]
+
+        night_actions = conn.execute(
+            """
+            SELECT COUNT(*) FROM action_logs
+            WHERE user_id = ? AND CAST(STRFTIME('%H', created_at) AS INTEGER) BETWEEN 0 AND 5
+            """,
+            (user_id,),
+        ).fetchone()[0]
+
+        return {
+            "total_spent": total_spent or 0,
+            "orders_count": orders_count or 0,
+            "bonus_streak": bonus_streak or 0,
+            "total_actions": total_actions or 0,
+            "price_clicks": price_clicks or 0,
+            "night_actions": night_actions or 0,
+        }
+    finally:
+        conn.close()
+
+
+async def get_revenue_timeseries(days: int = 30) -> dict:
+    conn = await get_connection()
+    try:
+        since_date = (datetime.utcnow() - timedelta(days=days - 1)).date()
+        rows = conn.execute(
+            """
+            SELECT DATE(created_at) as d, SUM(COALESCE(final_price, price))
+            FROM orders
+            WHERE status != 'cancel' AND created_at IS NOT NULL AND DATE(created_at) >= DATE(?)
+            GROUP BY DATE(created_at)
+            ORDER BY DATE(created_at)
+            """,
+            (since_date,),
+        ).fetchall()
+        return {row[0]: row[1] or 0 for row in rows}
+    finally:
+        conn.close()
+
+
+async def get_service_distribution() -> dict:
+    conn = await get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT COALESCE(service_type, 'Не указано'), COUNT(*)
+            FROM orders
+            WHERE status != 'cancel'
+            GROUP BY COALESCE(service_type, 'Не указано')
+            ORDER BY COUNT(*) DESC
+            """,
+        ).fetchall()
+        return {row[0]: row[1] for row in rows}
+    finally:
+        conn.close()
+
+
+async def get_funnel_counts(days: int = 30) -> dict:
+    conn = await get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT event_type, COUNT(*)
+            FROM action_logs
+            WHERE created_at >= datetime('now', ?)
+              AND event_type IN ('start','price_list','consult','order_submit')
+            GROUP BY event_type
+            """,
+            (f"-{days} day",),
+        ).fetchall()
+        counts = {"start": 0, "price_list": 0, "consult": 0, "order_submit": 0}
+        for row in rows:
+            counts[row[0]] = row[1]
+        return counts
+    finally:
+        conn.close()
+
+
+async def get_live_pulse_metrics() -> dict:
+    conn = await get_connection()
+    try:
+        revenue_today = (
+            conn.execute(
+                "SELECT SUM(COALESCE(final_price, price)) FROM orders WHERE status != 'cancel' AND DATE(created_at) = DATE('now')"
+            ).fetchone()[0]
+            or 0
+        )
+
+        avg_revenue_rows = conn.execute(
+            """
+            SELECT DATE(created_at) d, SUM(COALESCE(final_price, price))
+            FROM orders WHERE status != 'cancel' AND created_at IS NOT NULL
+            GROUP BY DATE(created_at) ORDER BY DATE(created_at) DESC LIMIT 7
+            """
+        ).fetchall()
+        avg_revenue = 0
+        if avg_revenue_rows:
+            totals = [r[1] or 0 for r in avg_revenue_rows if r[1] is not None]
+            avg_revenue = sum(totals) / max(1, len(totals))
+
+        active_users_1h = conn.execute(
+            "SELECT COUNT(DISTINCT user_id) FROM action_logs WHERE created_at >= datetime('now','-1 hour')",
+        ).fetchone()[0]
+
+        pending_orders = conn.execute(
+            "SELECT COUNT(*) FROM orders WHERE status NOT IN ('done','cancel')",
+        ).fetchone()[0]
+
+        urgent_rows = conn.execute(
+            "SELECT deadline, status FROM orders WHERE status NOT IN ('done','cancel') AND deadline IS NOT NULL",
+        ).fetchall()
+        urgent_count = 0
+        now_date = datetime.utcnow().date()
+        for deadline, status in urgent_rows:
+            if not deadline:
+                continue
+            if isinstance(deadline, str) and ("urgent" in deadline.lower() or "сроч" in deadline.lower()):
+                urgent_count += 1
+                continue
+            try:
+                parsed = datetime.strptime(deadline, "%d.%m.%Y").date()
+                if (parsed - now_date).days <= 3:
+                    urgent_count += 1
+            except Exception:
+                continue
+
+        orders_today = conn.execute(
+            "SELECT COUNT(*) FROM orders WHERE DATE(created_at) = DATE('now')",
+        ).fetchone()[0]
+        leads_today = conn.execute(
+            "SELECT COUNT(*) FROM action_logs WHERE event_type = 'start' AND DATE(created_at) = DATE('now')",
+        ).fetchone()[0]
+        conversion = 0
+        if leads_today:
+            conversion = round((orders_today / leads_today) * 100, 2)
+
+        error_count = conn.execute(
+            "SELECT COUNT(*) FROM action_logs WHERE event_type = 'error' AND DATE(created_at) = DATE('now')",
+        ).fetchone()[0]
+
+        return {
+            "revenue_today": revenue_today,
+            "avg_revenue": avg_revenue,
+            "active_users_1h": active_users_1h or 0,
+            "pending_orders": pending_orders or 0,
+            "urgent_count": urgent_count,
+            "conversion": conversion,
+            "errors": error_count or 0,
+        }
     finally:
         conn.close()
 

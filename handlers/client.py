@@ -242,6 +242,8 @@ async def profile(update: Update, context: Any):
 
     total_spent = u.get("total_spent", 0) or 0
     rank_name, _, amount_needed, progress_bar = _rank_progress(total_spent)
+    badges = await utils.compute_achievements(query.from_user.id)
+    badges_line = " ".join(badges) if badges else "—"
 
     txt = (
         f"👤 <b>ЛИЧНОЕ ДЕЛО</b>\n"
@@ -250,6 +252,7 @@ async def profile(update: Update, context: Any):
         f"🏆 <b>Ранг:</b> {rank_name}\n"
         f"📊 <b>Прогресс:</b> {progress_bar}\n"
         f"До следующего звания: {amount_needed} RUB\n\n"
+        f"🎖 <b>Ачивки:</b> {badges_line}\n"
         f"<i>Всего инвестировано в спокойствие: {total_spent} RUB</i>"
     )
     markup = await _profile_markup(query.from_user.id)

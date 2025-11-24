@@ -7,7 +7,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InputMediaPhoto
 from telegram.error import BadRequest, Forbidden
 from telegram.ext import ContextTypes, ConversationHandler, MessageHandler, CallbackQueryHandler, CommandHandler, filters
 
@@ -15,6 +15,7 @@ from config import ADMIN_IDS
 from database import core as db
 from database import db as crm_db
 from keyboards import admin_kb
+from services import analytics
 from keyboards.admin_kb import OrderCallback, StatsCallback, UserCallback
 import utils
 
@@ -211,6 +212,10 @@ async def show_client_profile(update: Update, context: ContextTypes.DEFAULT_TYPE
     link = f"<a href='tg://user?id={user['user_id']}'>{user.get('full_name') or user['user_id']}</a>"
     rank = _rank_by_spent(user.get("total_spent", 0))
     note = user.get("admin_note") or "—"
+    tags = await utils.get_behavior_tags(target_id)
+    tag_line = " ".join(tags) if tags else "—"
+    badges = await utils.compute_achievements(target_id)
+    badges_line = " ".join(badges) if badges else "—"
     text = (
         f"👤 Пользователь: {link} ({uname})\n"
         f"🆔 ID: {user['user_id']}\n"
@@ -219,6 +224,8 @@ async def show_client_profile(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"💰 Баланс: {user.get('balance', 0)} 💎\n"
         f"📦 Заказы: {user.get('orders_count', 0)} (Сумма: {user.get('total_spent', 0)} ₽)\n"
         f"🏆 Ранг: {rank}\n"
+        f"🏷 Теги: {tag_line}\n"
+        f"🎖 Бейджи: {badges_line}\n"
         f"📝 Заметка: {note}"
     )
 
@@ -1167,6 +1174,41 @@ async def send_charts(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("📈 Графики готовы. Смотри вложение.", reply_markup=admin_kb.main_menu())
 
 
+async def send_full_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update.effective_user.id):
+        return
+    query = update.callback_query
+    if query:
+        await query.answer("Формируем дашборд...", show_alert=False)
+
+    revenue_img = await analytics.generate_revenue_chart()
+    pie_img = await analytics.generate_services_pie_chart()
+    funnel_img = await analytics.generate_funnel_chart()
+    metrics = await db.get_live_pulse_metrics()
+
+    caption = (
+        "📊 <b>ПОЛНЫЙ ОТЧЁТ</b>\n"
+        f"💰 Сегодня: {int(metrics.get('revenue_today', 0))} ₽ | Среднее: {int(metrics.get('avg_revenue', 0))} ₽\n"
+        f"👥 Активны (1ч): {metrics.get('active_users_1h', 0)} | Pending: {metrics.get('pending_orders', 0)}\n"
+        f"⚠️ Срочных: {metrics.get('urgent_count', 0)} | Ошибок: {metrics.get('errors', 0)}\n"
+        f"📉 Конверсия: {metrics.get('conversion', 0)}%"
+    )
+
+    media = [
+        InputMediaPhoto(revenue_img, caption=caption, parse_mode="HTML"),
+        InputMediaPhoto(pie_img),
+        InputMediaPhoto(funnel_img),
+    ]
+
+    target_chat = query.message.chat_id if query and query.message else update.effective_chat.id
+    await context.bot.send_media_group(chat_id=target_chat, media=media)
+
+    if query:
+        await _safe_edit(query, "📊 Альбом отправлен", reply_markup=admin_kb.main_menu())
+    else:
+        await update.message.reply_text("📊 Альбом отправлен", reply_markup=admin_kb.main_menu())
+
+
 async def start_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_admin(update.effective_user.id):
         return ConversationHandler.END
@@ -1324,6 +1366,7 @@ def setup(app):
 
     app.add_handler(CallbackQueryHandler(show_services, pattern="^admin_prices$"))
     app.add_handler(CallbackQueryHandler(send_charts, pattern="^admin_charts$"))
+    app.add_handler(CallbackQueryHandler(send_full_report, pattern="^admin_full_report$"))
     app.add_handler(CallbackQueryHandler(show_service_actions, pattern=r"^edit_svc_\d+$"))
     app.add_handler(CallbackQueryHandler(delete_service, pattern=r"^svc_delete_\d+$"))
     service_conv = ConversationHandler(

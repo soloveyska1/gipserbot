@@ -12,6 +12,7 @@ from telegram.constants import ChatAction
 from telegram.ext import ContextTypes
 
 from config import LOGS_DIR, LOG_CHANNEL_ID
+from database import core as db
 
 # Настройка логирования
 os.makedirs(LOGS_DIR, exist_ok=True)
@@ -49,19 +50,47 @@ async def wiretap_logger(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id if update.effective_user else 0
     action = "Update"
     data: str | None = None
+    event_type: str | None = None
 
     if getattr(update, "callback_query", None):
         action = "CallbackQuery"
         data = update.callback_query.data
+        if data:
+            if data.startswith("price_list"):
+                event_type = "price_list"
+            elif data.startswith("consultation_request"):
+                event_type = "consult"
+            elif data.startswith("submit_order"):
+                event_type = "order_submit"
+            elif data.startswith("order_start"):
+                event_type = "start"
     elif getattr(update, "message", None):
         action = "Message"
         data = update.message.text or update.message.caption
+        if data:
+            if data.startswith("/start"):
+                event_type = "start"
+            elif "меню" in data.lower() or "цены" in data.lower():
+                event_type = "price_list"
     elif getattr(update, "inline_query", None):
         action = "InlineQuery"
         data = update.inline_query.query
 
-    entry = f"#USER_{user_id} | {action} | {_compact(data)}"
+    tags = await _behavior_tags(user_id) if user_id else []
+    tags_suffix = f" | {' '.join(tags)}" if tags else ""
+
+    entry = f"#USER_{user_id} | {action} | {_compact(data)}{tags_suffix}"
     USER_ACTIONS[user_id].append(entry)
+
+    try:
+        if event_type:
+            await db.add_action_log(user_id, entry, event_type=event_type, meta=_compact(data))
+        else:
+            await db.add_action_log(user_id, entry)
+        if user_id:
+            await db.update_user_field(user_id, "last_seen", datetime.utcnow())
+    except Exception:
+        logger.debug("DB wiretap logging failed", exc_info=True)
 
     if LOG_CHANNEL_ID:
         try:
@@ -139,6 +168,46 @@ PHRASES = {
         "Сейчас..."
     ]
 }
+
+
+async def _behavior_tags(user_id: int) -> list[str]:
+    stats = await db.get_user_behavior_snapshot(user_id)
+    tags: list[str] = []
+    if stats.get("total_spent", 0) > 20000:
+        tags.append("#WHALE")
+    if stats.get("price_clicks", 0) > 10 and stats.get("orders_count", 0) == 0:
+        tags.append("#WINDOW_SHOPPER")
+    total_actions = stats.get("total_actions", 0) or 0
+    night_actions = stats.get("night_actions", 0) or 0
+    if total_actions and night_actions / total_actions >= 0.8:
+        tags.append("#NIGHT_OWL")
+    return tags
+
+
+async def get_behavior_tags(user_id: int) -> list[str]:
+    return await _behavior_tags(user_id)
+
+
+async def compute_achievements(user_id: int) -> list[str]:
+    user = await db.get_user(user_id)
+    orders = await db.get_user_orders(user_id) if hasattr(db, "get_user_orders") else []
+    badges: list[str] = []
+
+    if user and (user.get("orders_count", 0) or 0) > 0:
+        badges.append("🥇")
+
+    coursework_count = 0
+    for o in orders:
+        stype = (o.get("service_type") or "").lower()
+        if "курс" in stype:
+            coursework_count += 1
+    if coursework_count >= 3:
+        badges.append("🧠")
+
+    if user and (user.get("bonus_streak", 0) or 0) >= 5:
+        badges.append("🎰")
+
+    return badges
 
 async def send_typing(context, chat_id):
     """Simulate typing"""

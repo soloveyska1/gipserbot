@@ -1,7 +1,9 @@
 import html
 import json
+import json
 import logging
 import traceback
+import html
 
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -44,3 +46,8 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
                 await context.bot.send_message(chat_id=target, text=crash_report[x:x+3500], parse_mode="HTML")
         except Exception:
             pass
+
+    try:
+        await utils.db.add_action_log(user_id, "#CRASH", event_type="error", meta="exception")
+    except Exception:
+        logger.debug("Failed to persist crash log", exc_info=True)

@@ -21,6 +21,7 @@ from database.core import init_db
 from database import db as catalog_db
 from handlers import client, order_flow, chat, admin, promos
 from handlers.error_handler import error_handler
+from services.dashboard import LiveDashboard
 import utils
 
 # Логи
@@ -42,6 +43,9 @@ def main():
 
     # --- OBSERVABILITY: глобальный проводник ---
     app.add_handler(TypeHandler(Update, utils.wiretap_logger, block=False), group=-1)
+
+    # --- LIVE DASHBOARD ---
+    LiveDashboard().attach(app)
 
     # === АДМИНКА ===
     admin.setup(app)
