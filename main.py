@@ -4,7 +4,16 @@ import sys
 from pathlib import Path
 
 from telegram import Update
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ConversationHandler, TypeHandler
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ConversationHandler,
+    JobQueue,
+    MessageHandler,
+    TypeHandler,
+    filters,
+)
 
 # Настройка путей
 BASE_DIR = Path(__file__).resolve().parent
@@ -39,7 +48,7 @@ def main():
     catalog_db.seed_services()
     
     print("🚀 Запуск бота...")
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).job_queue(JobQueue()).build()
 
     # --- OBSERVABILITY: глобальный проводник ---
     app.add_handler(TypeHandler(Update, utils.wiretap_logger, block=False), group=-1)
