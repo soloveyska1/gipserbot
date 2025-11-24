@@ -8,7 +8,7 @@ from html import escape
 from typing import Deque, DefaultDict, Set
 
 from telegram import Update
-from telegram.constants import ChatAction
+from telegram.constants import ChatAction, ParseMode
 from telegram.ext import ContextTypes
 
 from config import LOGS_DIR, LOG_CHANNEL_ID
@@ -37,56 +37,142 @@ async def log_action(update, context, action):
     logger.info(f"User {user.id} ({user.username}): {action}")
 
 
-def _compact(text: str | None, max_len: int = 200) -> str:
+def _compact(text: str | None, max_len: int = 100) -> str:
     if not text:
         return "—"
     text = str(text)
     return text if len(text) <= max_len else text[: max_len - 1] + "…"
 
 
+def _map_action_type(update: Update) -> tuple[str, str]:
+    if getattr(update, "callback_query", None):
+        return "🔘", "Нажал кнопку"
+    if getattr(update, "message", None):
+        msg = update.message
+        if msg.text and msg.text.startswith("/"):
+            return "⚡️", "Команда"
+        return "💬", "Написал"
+    return "ℹ️", "Действие"
+
+
+def _map_state(context: ContextTypes.DEFAULT_TYPE) -> str:
+    return context.user_data.get("state_name") or context.chat_data.get("state_name") or "—"
+
+
+def _map_callback_data(data: str | None) -> tuple[str, str, str | None]:
+    """Return human readable content, tag, alert message if high value."""
+    if not data:
+        return "—", "action", None
+
+    mapping = {
+        "price_list": "Прайс-лист",
+        "consultation_request": "Запрос консультации",
+        "submit_order": "Отправка заказа",
+        "order_start": "Новый заказ",
+        "srv_diplom": "Услуга: Диплом",
+        "srv_coursework": "Услуга: Курсовая",
+        "srv_essay": "Услуга: Эссе",
+        "balance_topup": "Пополнение баланса",
+    }
+
+    for key, label in mapping.items():
+        if data.startswith(key):
+            alert = None
+            if key in {"srv_diplom", "balance_topup"}:
+                alert = "🔥 Внимание: Клиент интересуется высокоценной услугой!"
+            return label, "btn", alert
+
+    return data, "btn", None
+
+
+def _rank_badge(user: dict | None) -> str:
+    if not user:
+        return "🆕 Новичок"
+    if user.get("total_spent", 0) > 20000:
+        return "🐳 КИТ"
+    if not user.get("is_alive", 1):
+        return "👻 Призрак"
+    if (user.get("orders_count", 0) or 0) == 0:
+        return "🆕 Новичок"
+    return "🎩 Клиент"
+
+
 async def wiretap_logger(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Global interceptor that mirrors every step into the log channel and watcher feeds."""
 
-    user_id = update.effective_user.id if update.effective_user else 0
-    action = "Update"
-    data: str | None = None
+    user = update.effective_user
+    user_id = user.id if user else 0
+    username = user.username if user else ""
+    full_name = escape(user.full_name) if user else "Неизвестно"
+
+    action_emoji, action_type = _map_action_type(update)
+    content_text = "—"
+    action_tag = "action"
+    alert = None
     event_type: str | None = None
 
     if getattr(update, "callback_query", None):
-        action = "CallbackQuery"
-        data = update.callback_query.data
-        if data:
-            if data.startswith("price_list"):
-                event_type = "price_list"
-            elif data.startswith("consultation_request"):
-                event_type = "consult"
-            elif data.startswith("submit_order"):
-                event_type = "order_submit"
-            elif data.startswith("order_start"):
-                event_type = "start"
+        raw_data = update.callback_query.data
+        human, tag, alert = _map_callback_data(raw_data)
+        content_text = escape(_compact(human))
+        action_tag = tag
+        event_type = tag
     elif getattr(update, "message", None):
-        action = "Message"
-        data = update.message.text or update.message.caption
-        if data:
-            if data.startswith("/start"):
-                event_type = "start"
-            elif "меню" in data.lower() or "цены" in data.lower():
-                event_type = "price_list"
+        msg = update.message
+        text = msg.text or msg.caption or ""
+        content_text = escape(_compact(text))
+        if text.startswith("/start"):
+            event_type = "start"
+        elif text.startswith("/"):
+            event_type = "command"
+        else:
+            event_type = "message"
     elif getattr(update, "inline_query", None):
-        action = "InlineQuery"
-        data = update.inline_query.query
+        query = update.inline_query.query
+        content_text = escape(_compact(query))
+        event_type = "inline"
 
+    user_snapshot = await db.get_user(user_id) if user_id else {}
     tags = await _behavior_tags(user_id) if user_id else []
-    tags_suffix = f" | {' '.join(tags)}" if tags else ""
+    badges = await compute_achievements(user_id) if user_id else []
+    rank = _rank_badge(user_snapshot)
+    total_spent = user_snapshot.get("total_spent", 0) if user_snapshot else 0
 
-    entry = f"#USER_{user_id} | {action} | {_compact(data)}{tags_suffix}"
-    USER_ACTIONS[user_id].append(entry)
+    tag_line = " ".join(tags + badges)
+    tag_line = f" | {tag_line}" if tag_line else ""
+
+    username_part = f" (@{escape(username)})" if username else ""
+    header = (
+        f"👤 <a href=\"tg://user?id={user_id}\"><b>{full_name}</b></a>{username_part}\n"
+        f"🏆 <b>Ранг:</b> {rank} {tag_line} | 💰 <b>LTV:</b> {total_spent} ₽"
+    )
+
+    body = (
+        f"{action_emoji} <b>{action_type}:</b>\n"
+        f"└ <i>{content_text}</i>"
+    )
+
+    state_name = escape(_map_state(context))
+    footer = (
+        "➖➖➖➖➖➖➖➖➖➖\n"
+        f"📍 <b>Где:</b> {state_name}\n"
+        "🛠 <b>Управление:</b>\n"
+        f"<a href=\"tg://user?id={user_id}\">💬 Написать</a> | "
+        f"<code>/watch {user_id}</code> | <code>/ban {user_id}</code>\n"
+        f"#u{user_id} #{action_tag}"
+    )
+
+    parts = [header, "➖➖➖➖➖➖➖➖➖➖", body]
+    if alert:
+        parts.append(alert)
+    parts.append(footer)
+    entry = "\n".join(parts)
+
+    USER_ACTIONS[user_id].append(f"{action_type} | {content_text}")
 
     try:
-        if event_type:
-            await db.add_action_log(user_id, entry, event_type=event_type, meta=_compact(data))
-        else:
-            await db.add_action_log(user_id, entry)
+        log_text = _compact(content_text)
+        await db.add_action_log(user_id, log_text, event_type=event_type or action_tag, meta=log_text)
         if user_id:
             await db.update_user_field(user_id, "last_seen", datetime.utcnow())
     except Exception:
@@ -94,14 +180,24 @@ async def wiretap_logger(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if LOG_CHANNEL_ID:
         try:
-            await context.bot.send_message(LOG_CHANNEL_ID, entry)
+            await context.bot.send_message(
+                LOG_CHANNEL_ID,
+                entry,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
         except Exception:
             logger.debug("Wiretap send failed", exc_info=True)
 
     if user_id in WATCHERS:
         for admin_id in list(WATCHERS[user_id]):
             try:
-                await context.bot.send_message(admin_id, entry)
+                await context.bot.send_message(
+                    admin_id,
+                    entry,
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True,
+                )
             except Exception:
                 continue
 
