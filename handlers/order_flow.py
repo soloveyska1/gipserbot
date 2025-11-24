@@ -1,4 +1,5 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+import logging
 from telegram.ext import ContextTypes, ConversationHandler
 from database import core as db
 from database import db as catalog_db
@@ -37,13 +38,22 @@ async def start_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     
     chat_id = update.effective_chat.id
-    await context.bot.send_photo(
-        chat_id=chat_id,
-        photo=MENU_PHOTO,
-        caption=caption,
-        reply_markup=kb.service_showcase_kb(),
-        parse_mode="HTML"
-    )
+    try:
+        await context.bot.send_photo(
+            chat_id=chat_id,
+            photo=MENU_PHOTO,
+            caption=caption,
+            reply_markup=kb.service_showcase_kb(),
+            parse_mode="HTML"
+        )
+    except Exception as exc:
+        logging.warning("Failed to send showcase photo, falling back to text: %s", exc)
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=caption,
+            reply_markup=kb.service_showcase_kb(),
+            parse_mode="HTML"
+        )
     return TYPE
 
 async def get_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
