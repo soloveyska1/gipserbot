@@ -326,3 +326,37 @@ async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await _safe_edit(query, txt, markup=kb.success_kb(oid))
     return ConversationHandler.END
+
+
+# === CONSULTATION (SOS) ===
+async def cancel_consultation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Allow users to stop the consultation flow gracefully."""
+    query = update.callback_query
+    if query:
+        await query.answer()
+        await _safe_edit(query, "❌ Консультация отменена.")
+    else:
+        await update.effective_message.reply_text("❌ Консультация отменена.")
+    return ConversationHandler.END
+
+
+async def handle_consultation_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Collect a freeform consultation request and notify admins."""
+    message = update.effective_message
+    user = update.effective_user
+
+    # Forward the content to admins if possible
+    for admin_id in ADMIN_IDS:
+        try:
+            await message.copy_to(admin_id)
+        except Exception:
+            try:
+                await context.bot.send_message(admin_id, f"🆘 Запрос консультации от {user.id}")
+            except Exception:
+                pass
+
+    await message.reply_text(
+        "🆘 Сигнал получен. Менеджер свяжется в ближайшее время.",
+        parse_mode="HTML",
+    )
+    return ConversationHandler.END
