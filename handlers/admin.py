@@ -463,16 +463,47 @@ async def show_orders(update: Update, context: ContextTypes.DEFAULT_TYPE, page: 
     else:
         title = f"📦 <b>ЗАКАЗЫ: {filter_names.get(current_filter, 'ВСЕ')}</b> (стр. {page+1})"
 
+    status_map = {
+        "checking": "🟡 На проверке",
+        "pending_pay": "💳 Ждет оплаты",
+        "paid": "💸 Оплачен",
+        "work": "⚙️ В работе",
+        "norm_control": "🧭 Нормоконтроль",
+        "edits": "✏️ Правки",
+        "suspended": "⏸ Пауза",
+        "done": "✅ Готов",
+        "cancel": "❌ Отмена",
+    }
+
     lines = [title]
     if not current_slice:
         lines.append("Пока пусто — попробуйте другой фильтр или поиск.")
     else:
         for o in current_slice:
-            marker, deadline_text = _deadline_marker(o.get("deadline"))
-            price_display = o.get("final_price", o.get("price", 0))
+            raw_type = o.get("service_type", "Заказ")
+            clean_type = raw_type.split("(")[0].strip()
+
+            raw_deadline = o.get("deadline", "Normal") or "Normal"
+            if "urgent" in raw_deadline.lower():
+                deadline_str = "🔴 СРОЧНО"
+            elif "normal" in raw_deadline.lower():
+                deadline_str = "⚪️ Штатно"
+            else:
+                marker, deadline_text = _deadline_marker(raw_deadline)
+                deadline_str = f"{marker} {deadline_text}"
+
+            price_value = o.get("final_price", o.get("price", 0))
+            price = f"{price_value:,}".replace(",", " ")
+
+            user_link = f"<a href='tg://user?id={o['user_id']}'>{o.get('full_name', 'Юзер')}</a>"
+            if o.get("username"):
+                user_link += f" (@{o['username']})"
+
             lines.append(
-                f"#{o['id']} | {o.get('service_type', '—')} | {o.get('status', '—')}\n"
-                f"💰 {price_display} ₽ | ⏳ {marker} {deadline_text}"
+                f"{status_map.get(o['status'], '❓')} <b>#{o['id']} {clean_type}</b>\n"
+                f"👤 {user_link}\n"
+                f"💰 <b>{price} ₽</b> | ⏳ {deadline_str}\n"
+                f"➖➖➖➖➖➖➖➖➖➖"
             )
 
     kb = admin_kb.orders_list(orders, page, current_filter=current_filter)

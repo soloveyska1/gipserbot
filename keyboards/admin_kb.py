@@ -155,10 +155,12 @@ def orders_list(orders, page: int = 0, current_filter: str = "all"):
     }
 
     for o in current:
+        raw_type = o.get("service_type", "Заказ")
+        clean_type = raw_type.split("(")[0].strip()
         kb.append(
             [
                 InlineKeyboardButton(
-                    f"{status_emoji.get(o['status'], '?')} #{o['id']} | {o.get('final_price', o['price'])}₽",
+                    f"{status_emoji.get(o['status'], '?')} #{o['id']} | {clean_type}",
                     callback_data=OrderCallback(action="view", id=o["id"]).pack(),
                 )
             ]
