@@ -7,11 +7,12 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InputMediaPhoto
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InputMediaPhoto, InputMediaDocument
 from telegram.error import BadRequest, Forbidden
 from telegram.ext import ContextTypes, ConversationHandler, MessageHandler, CallbackQueryHandler, CommandHandler, filters
 
 from config import ADMIN_IDS
+import html
 from database import core as db
 from database import db as crm_db
 from keyboards import admin_kb
@@ -570,7 +571,6 @@ async def show_order(update: Update, context: ContextTypes.DEFAULT_TYPE, order_i
     if oid is None:
         return
     order = await db.get_order(oid)
-
     status_label = {
         "checking": "🟡 На проверке",
         "pending_pay": "💳 Ждёт оплаты",
@@ -583,23 +583,139 @@ async def show_order(update: Update, context: ContextTypes.DEFAULT_TYPE, order_i
         "cancel": "❌ Отменён",
     }
 
-    original_price = order.get("original_price", order["price"])
-    points_used = order.get("points_used", 0)
-    final_price = order.get("final_price", order["price"])
-    user_link = f"<a href='tg://user?id={order['user_id']}'>{order['user_id']}</a>"
+    user = await db.get_user(order['user_id'])
+    full_name = user.get("full_name", "Клиент") if user else "Клиент"
+    username = user.get("username") if user else None
+    badges = []
+    total_spent = user.get("total_spent", 0) if user else 0
+    if total_spent > 20000:
+        badges.append("🐳")
+    elif total_spent == 0:
+        badges.append("🆕")
+    badge_str = " ".join(badges)
+
+    status_emoji = status_label.get(order['status'], "❓")
+    clean_service = (order.get("service_type") or "Услуга").split("(")[0].strip()
+    topic_preview = html.escape(order.get("topic") or "—")
+    if len(topic_preview) > 120:
+        topic_preview = topic_preview[:120] + "…"
+
+    files_list = order.get("files") or []
+    files_count = len(files_list)
+    source_map = {
+        "help_needed": "Кнопка 'Нет темы'",
+        "voice": "Голосовое",
+        "files": "Вложения",
+        "text": "Текст",
+    }
+    source_tag = source_map.get(order.get("topic_source"), "—")
+
+    price_value = order.get("final_price", order.get("price", 0))
+    price_text = f"{price_value:,}".replace(",", " ")
+
+    user_link = f"<a href='tg://user?id={order['user_id']}'>{html.escape(full_name)}</a>"
+    if username:
+        user_link += f" (@{username})"
+    if badge_str:
+        user_link += f" {badge_str}"
 
     txt = (
-        f"📦 <b>ЗАКАЗ #{oid}</b>\n"
-        f"👤 Юзер: {user_link}\n"
-        f"📚 Тип: {order['service_type']}\n"
-        f"📊 Статус: {status_label.get(order['status'], order['status'])}\n"
-        f"📝 Тема: {order['topic']}\n\n"
-        f"💵 <b>Финансы:</b>\n"
-        f"Цена: {original_price} ₽\n"
-        f"Списано баллов: -{points_used} 💎\n"
-        f"<b>ИТОГО К ОПЛАТЕ: {final_price} ₽</b>\n"
+        f"📦 <b>ЗАКАЗ #{oid}</b> | {status_emoji}\n"
+        f"👤 {user_link}\n"
+        f"📚 <b>Услуга:</b> {clean_service}\n"
+        f"➖➖➖➖➖➖➖➖➖➖\n"
+        f"📝 <b>Вводные данные:</b>\n"
+        f"{topic_preview}\n"
+        f"<i>(Например: \"Курсовая по праву...\" или \"🎤 Голосовое\")</i>\n\n"
+        f"📎 <b>Вложения:</b> {files_count} шт.\n"
+        f"🎯 <b>Источник:</b> {source_tag}\n"
+        f"💰 <b>Предв. цена:</b> {price_text} ₽\n"
+        f"➖➖➖➖➖➖➖➖➖➖"
     )
-    await _safe_edit(query, txt, reply_markup=admin_kb.order_actions(oid, order['status'], order['user_id']), parse_mode="HTML")
+    await _safe_edit(
+        query,
+        txt,
+        reply_markup=admin_kb.order_actions(
+            oid, order['status'], order['user_id'], bool(order.get("voice_id")), files_count
+        ),
+        parse_mode="HTML",
+    )
+
+
+async def admin_play_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update.effective_user.id):
+        return
+    query = update.callback_query
+    if query:
+        await query.answer()
+    oid = int(query.data.split("_")[-1]) if query and query.data else None
+    if not oid:
+        return
+    order = await db.get_order(oid)
+    voice_id = order.get("voice_id") if order else None
+    if not voice_id:
+        if query:
+            await query.answer("Нет голосовых", show_alert=True)
+        return
+    try:
+        await context.bot.send_voice(update.effective_user.id, voice_id, caption=f"ГС клиента по заказу #{oid}")
+    except Exception:
+        if query:
+            await query.answer("Не удалось отправить голосовое", show_alert=True)
+
+
+async def admin_get_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update.effective_user.id):
+        return
+    query = update.callback_query
+    if query:
+        await query.answer()
+    oid = int(query.data.split("_")[-1]) if query and query.data else None
+    if not oid:
+        return
+    order = await db.get_order(oid)
+    files_list = order.get("files") if order else []
+    if not files_list:
+        if query:
+            await query.answer("Нет вложений", show_alert=True)
+        return
+
+    photos = [f for f in files_list if f.get("type") == "photo"]
+    documents = [f for f in files_list if f.get("type") == "document"]
+
+    # Telegram ограничивает группы до 10 элементов
+    def _chunk(seq, size=10):
+        for i in range(0, len(seq), size):
+            yield seq[i:i+size]
+
+    for chunk in _chunk(photos):
+        if len(chunk) == 1:
+            try:
+                await context.bot.send_photo(update.effective_user.id, chunk[0]["file_id"])
+            except Exception:
+                pass
+            continue
+        media = [InputMediaPhoto(m["file_id"]) for m in chunk]
+        try:
+            await context.bot.send_media_group(update.effective_user.id, media)
+        except Exception:
+            pass
+
+    for chunk in _chunk(documents):
+        if len(chunk) == 1:
+            try:
+                await context.bot.send_document(update.effective_user.id, chunk[0]["file_id"])
+            except Exception:
+                pass
+            continue
+        media = [InputMediaDocument(m["file_id"]) for m in chunk]
+        try:
+            await context.bot.send_media_group(update.effective_user.id, media)
+        except Exception:
+            pass
+
+    if query:
+        await query.answer("Вложения отправлены")
 
 
 async def handle_order_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1367,6 +1483,8 @@ def setup(app):
     app.add_handler(CallbackQueryHandler(show_services, pattern="^admin_prices$"))
     app.add_handler(CallbackQueryHandler(send_charts, pattern="^admin_charts$"))
     app.add_handler(CallbackQueryHandler(send_full_report, pattern="^admin_full_report$"))
+    app.add_handler(CallbackQueryHandler(admin_play_voice, pattern=r"^adm_voice_\d+$"))
+    app.add_handler(CallbackQueryHandler(admin_get_files, pattern=r"^adm_files_\d+$"))
     app.add_handler(CallbackQueryHandler(show_service_actions, pattern=r"^edit_svc_\d+$"))
     app.add_handler(CallbackQueryHandler(delete_service, pattern=r"^svc_delete_\d+$"))
     service_conv = ConversationHandler(

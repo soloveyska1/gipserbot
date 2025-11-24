@@ -85,22 +85,84 @@ async def confirm_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if "srv_back" in query.data:
         return await start_order(update, context)
         
+    prompt_text = (
+        "🎯 <b>ШАГ 2: ДОСЬЕ И УЛИКИ</b>\n\n"
+        "Чтобы мы попали точно в цель, нам нужна информация.\n"
+        "Не стесняйся, тут все свои.\n\n"
+        "<b>📥 Как можно сдать задачу:</b>\n"
+        "🎤 <b>Голосовое:</b> Просто нажми микрофон и расскажи.\n"
+        "🔄 <b>Пересылка:</b> Перешли сообщение от препода.\n"
+        "📎 <b>Файлы:</b> Кидай методички, планы, фото доски.\n"
+        "✍️ <b>Текст:</b> Напиши тему руками.\n\n"
+        "👇 <i>Жду материалы...</i>"
+    )
+
+    markup = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("🤷‍♂️ У меня нет темы (Помогите)", callback_data="no_topic")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="back_to_type")],
+        ]
+    )
+
     await _safe_edit(
         query,
-        "📝 <b>ШАГ 2: ЗАДАНИЕ</b>\n\nНапишите тему работы, прикрепите методичку или опишите требования.\n\n<i>Отправьте сообщение или файл...</i>",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_type")]]),
+        prompt_text,
+        reply_markup=markup,
         parse_mode="HTML"
     )
     return TOPIC
 
 # === 3. ТЕМА И ФАЙЛЫ ===
 async def get_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.caption or update.message.text or "[Файл]"
-    context.user_data['order']['topic'] = text
-    
-    # Если есть файл, можно сохранить его ID (логику сохранения опустим для простоты, берем текст)
-    
-    await update.message.reply_text(
+    order = context.user_data.setdefault('order', {})
+    files = order.setdefault('files', [])
+
+    if update.callback_query:
+        query = update.callback_query
+        await query.answer()
+        if query.data == "no_topic":
+            order['topic'] = "⚠️ Клиент просит подобрать тему"
+            order['topic_source'] = "help_needed"
+            order['voice_id'] = order.get('voice_id', '')
+            await _safe_edit(query, "Принято! Улики подшиты к делу.", parse_mode="HTML")
+            await query.message.reply_text(
+                "⏳ <b>ШАГ 3: СРОКИ</b>\nНасколько это срочно?",
+                reply_markup=kb.deadline_kb(),
+                parse_mode="HTML"
+            )
+            return DEADLINE
+
+    message = update.message
+    if not message:
+        return TOPIC
+
+    topic_source = "text"
+    topic_value = message.caption or message.text or ""
+
+    if message.voice:
+        order['voice_id'] = message.voice.file_id
+        topic_value = "🎤 Голосовое сообщение"
+        topic_source = "voice"
+    elif message.document:
+        files.append({"file_id": message.document.file_id, "type": "document"})
+        topic_value = "📎 Файлы/Скриншоты"
+        topic_source = "files"
+    elif message.photo:
+        photo = message.photo[-1]
+        files.append({"file_id": photo.file_id, "type": "photo"})
+        topic_value = "📎 Файлы/Скриншоты"
+        topic_source = "files"
+    elif message.text:
+        topic_source = "text"
+
+    order['topic'] = topic_value or "—"
+    order['topic_source'] = topic_source
+
+    await message.reply_text(
+        "Принято! Улики подшиты к делу.",
+        parse_mode="HTML",
+    )
+    await message.reply_text(
         "⏳ <b>ШАГ 3: СРОКИ</b>\nНасколько это срочно?",
         reply_markup=kb.deadline_kb(),
         parse_mode="HTML"
@@ -113,7 +175,28 @@ async def get_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     
     if query.data == "back_to_topic":
-        await _safe_edit(query, "📝 Жду тему или файлы...", reply_markup=None)
+        prompt_text = (
+            "🎯 <b>ШАГ 2: ДОСЬЕ И УЛИКИ</b>\n\n"
+            "Чтобы мы попали точно в цель, нам нужна информация.\n"
+            "Не стесняйся, тут все свои.\n\n"
+            "<b>📥 Как можно сдать задачу:</b>\n"
+            "🎤 <b>Голосовое:</b> Просто нажми микрофон и расскажи.\n"
+            "🔄 <b>Пересылка:</b> Перешли сообщение от препода.\n"
+            "📎 <b>Файлы:</b> Кидай методички, планы, фото доски.\n"
+            "✍️ <b>Текст:</b> Напиши тему руками.\n\n"
+            "👇 <i>Жду материалы...</i>"
+        )
+        await _safe_edit(
+            query,
+            prompt_text,
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [InlineKeyboardButton("🤷‍♂️ У меня нет темы (Помогите)", callback_data="no_topic")],
+                    [InlineKeyboardButton("🔙 Назад", callback_data="back_to_type")],
+                ]
+            ),
+            parse_mode="HTML",
+        )
         return TOPIC
         
     is_urgent = (query.data == "time_urgent")
@@ -261,11 +344,14 @@ async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'uid': user.id,
         'type': o['service_name'], # Сохраняем имя услуги как тип
         'topic': o['topic'],
+        'topic_source': o.get('topic_source', ''),
+        'voice_id': o.get('voice_id', ''),
+        'files': o.get('files', []),
         'deadline': o['deadline_text'],
         'final_price': o['final_price'],
         'original_price': o['price_calculated'],
         'points_used': o['points_used'],
-        'promo_code': None 
+        'promo_code': None
     }
     
     # Создаем заказ

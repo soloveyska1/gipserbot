@@ -1,5 +1,6 @@
 import sqlite3
 import logging
+import json
 from datetime import datetime, timedelta
 from config import DB_PATH
 
@@ -83,6 +84,8 @@ def _ensure_order_columns(cursor):
         "points_used",
         "final_price",
         "files",
+        "voice_id",
+        "topic_source",
         "speech",
         "pres",
         "vip",
@@ -99,6 +102,8 @@ def _ensure_order_columns(cursor):
                 user_id INTEGER,
                 service_type TEXT,
                 topic TEXT,
+                topic_source TEXT,
+                voice_id TEXT,
                 deadline TEXT,
                 status TEXT DEFAULT 'checking',
                 price INTEGER DEFAULT 0,
@@ -133,19 +138,21 @@ def _ensure_order_columns(cursor):
 
         select_exprs = [
             col_or_default("id", "NULL"),
-                col_or_default("user_id", "0"),
-                col_or_default("service_type", "''", fallback="order_type"),
-                col_or_default("topic", "''"),
-                col_or_default("deadline", "''"),
-                col_or_default("status", "'checking'"),
-                col_or_default("price", "0"),
-                col_or_default("original_price", "price"),
-                col_or_default("points_used", "0"),
-                col_or_default("final_price", "price"),
-                col_or_default("files", "''"),
-                col_or_default("speech", "0"),
-                col_or_default("pres", "0"),
-                col_or_default("vip", "0"),
+            col_or_default("user_id", "0"),
+            col_or_default("service_type", "''", fallback="order_type"),
+            col_or_default("topic", "''"),
+            col_or_default("topic_source", "''"),
+            col_or_default("voice_id", "''"),
+            col_or_default("deadline", "''"),
+            col_or_default("status", "'checking'"),
+            col_or_default("price", "0"),
+            col_or_default("original_price", "price"),
+            col_or_default("points_used", "0"),
+            col_or_default("final_price", "price"),
+            col_or_default("files", "''"),
+            col_or_default("speech", "0"),
+            col_or_default("pres", "0"),
+            col_or_default("vip", "0"),
             col_or_default("is_visible", "1"),
             col_or_default("created_at", "CURRENT_TIMESTAMP"),
             col_or_default("is_hidden_for_user", "0"),
@@ -194,6 +201,8 @@ def _ensure_order_columns(cursor):
     _ensure_column(cursor, "orders", "original_price", "original_price INTEGER DEFAULT 0")
     _ensure_column(cursor, "orders", "points_used", "points_used INTEGER DEFAULT 0")
     _ensure_column(cursor, "orders", "final_price", "final_price INTEGER DEFAULT 0")
+    _ensure_column(cursor, "orders", "voice_id", "voice_id TEXT")
+    _ensure_column(cursor, "orders", "topic_source", "topic_source TEXT")
     _ensure_column(cursor, "users", "achievements", "achievements TEXT DEFAULT ''")
     _ensure_column(cursor, "users", "last_seen", "last_seen TIMESTAMP")
 
@@ -370,19 +379,39 @@ async def create_order(data):
     try:
         cursor = conn.execute(
             """
-            INSERT INTO orders (user_id, service_type, topic, deadline_type, price, original_price, points_used, final_price, files, speech, pres, vip, status, deadline, promo_code)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 'checking', ?, ?)
+            INSERT INTO orders (
+                user_id,
+                service_type,
+                topic,
+                topic_source,
+                voice_id,
+                deadline_type,
+                price,
+                original_price,
+                points_used,
+                final_price,
+                files,
+                speech,
+                pres,
+                vip,
+                status,
+                deadline,
+                promo_code
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 'checking', ?, ?)
             """,
             (
                 data['uid'],
                 data['type'],
                 data['topic'],
-                data['deadline'],
+                data.get('topic_source', ''),
+                data.get('voice_id', ''),
+                data.get('deadline'),
                 data['final_price'],
                 data.get('original_price', data['final_price']),
                 data.get('points_used', 0),
                 data.get('final_price', data['final_price']),
-                "",
+                json.dumps(data.get('files', [])),
                 data.get('deadline'),
                 data.get('promo_code'),
             ),
@@ -572,7 +601,7 @@ async def get_order(order_id):
     try:
         cursor = conn.execute(
             """
-            SELECT id, user_id, service_type, topic, deadline, status, price, files, speech, pres, vip, is_visible,
+            SELECT id, user_id, service_type, topic, topic_source, voice_id, deadline, status, price, files, speech, pres, vip, is_visible,
                    COALESCE(is_hidden_for_user, 0), created_at, deadline_type, COALESCE(upsell, 0),
                    COALESCE(referral_bonus_paid, 0), promo_code, last_ping_time,
                    COALESCE(original_price, price), COALESCE(points_used, 0), COALESCE(final_price, price)
@@ -582,29 +611,35 @@ async def get_order(order_id):
         )
         row = cursor.fetchone()
         if row:
+            try:
+                files = json.loads(row[9] or "[]")
+            except Exception:
+                files = []
             return {
                 "id": row[0],
                 "user_id": row[1],
                 "service_type": row[2],
                 "topic": row[3],
-                "deadline": row[4],
-                "status": row[5],
-                "price": row[6],
-                "files": row[7],
-                "speech": row[8],
-                "pres": row[9],
-                "vip": row[10],
-                "is_visible": row[11],
-                "is_hidden_for_user": row[12],
-                "created_at": row[13],
-                "deadline_type": row[14],
-                "upsell": row[15],
-                "referral_bonus_paid": row[16],
-                "promo_code": row[17],
-                "last_ping_time": row[18],
-                "original_price": row[19],
-                "points_used": row[20],
-                "final_price": row[21],
+                "topic_source": row[4],
+                "voice_id": row[5],
+                "deadline": row[6],
+                "status": row[7],
+                "price": row[8],
+                "files": files,
+                "speech": row[10],
+                "pres": row[11],
+                "vip": row[12],
+                "is_visible": row[13],
+                "is_hidden_for_user": row[14],
+                "created_at": row[15],
+                "deadline_type": row[16],
+                "upsell": row[17],
+                "referral_bonus_paid": row[18],
+                "promo_code": row[19],
+                "last_ping_time": row[20],
+                "original_price": row[21],
+                "points_used": row[22],
+                "final_price": row[23],
             }
         return None
     finally:
@@ -616,7 +651,7 @@ async def get_user_orders(user_id):
     try:
         cursor = conn.execute(
             """
-            SELECT id, user_id, service_type, topic, deadline, status, price, files, speech, pres, vip, is_visible,
+            SELECT id, user_id, service_type, topic, topic_source, voice_id, deadline, status, price, files, speech, pres, vip, is_visible,
                    COALESCE(is_hidden_for_user, 0), created_at, deadline_type, COALESCE(upsell, 0),
                    COALESCE(referral_bonus_paid, 0), promo_code, last_ping_time,
                    COALESCE(original_price, price), COALESCE(points_used, 0), COALESCE(final_price, price)
@@ -628,14 +663,21 @@ async def get_user_orders(user_id):
         )
         orders = []
         for row in cursor.fetchall():
+            try:
+                files = json.loads(row[9] or "[]")
+            except Exception:
+                files = []
             orders.append(
                 {
                     "id": row[0],
-                    "status": row[5],
-                    "price": row[6],
+                    "status": row[7],
+                    "price": row[8],
                     "service_type": row[2],
                     "topic": row[3],
-                    "deadline": row[4],
+                    "topic_source": row[4],
+                    "voice_id": row[5],
+                    "deadline": row[6],
+                    "files": files,
                     "promo_code": row[17],
                     "original_price": row[19],
                     "points_used": row[20],

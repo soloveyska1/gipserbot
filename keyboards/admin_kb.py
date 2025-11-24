@@ -188,8 +188,14 @@ def orders_list(orders, page: int = 0, current_filter: str = "all"):
     return InlineKeyboardMarkup(kb)
 
 
-def order_actions(oid: int, status: str, user_id: int | None = None):
-    return InlineKeyboardMarkup(
+def order_actions(oid: int, status: str, user_id: int | None = None, voice_present: bool = False, files_count: int = 0):
+    rows = []
+    if voice_present:
+        rows.append([InlineKeyboardButton("▶️ Прослушать ГС", callback_data=f"adm_voice_{oid}")])
+    if files_count > 0:
+        rows.append([InlineKeyboardButton(f"📂 Скачать файлы ({files_count})", callback_data=f"adm_files_{oid}")])
+
+    rows.extend(
         [
             [
                 InlineKeyboardButton(
@@ -253,6 +259,7 @@ def order_actions(oid: int, status: str, user_id: int | None = None):
             [InlineKeyboardButton("⬅️ Назад к списку", callback_data=OrderCallback(action="list", id=0).pack())],
         ]
     )
+    return InlineKeyboardMarkup(rows)
 
 
 def prices_menu(prices: dict):

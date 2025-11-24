@@ -87,8 +87,9 @@ def main():
                 CallbackQueryHandler(order_flow.confirm_service, pattern="^srv_confirm_|^srv_back$|back_to_type")
             ],
             order_flow.TOPIC: [
-                MessageHandler(filters.Document.ALL | filters.PHOTO | filters.TEXT & ~filters.COMMAND, order_flow.get_topic),
-                CallbackQueryHandler(order_flow.start_order, pattern="^back_to_type$")
+                MessageHandler(filters.ALL & ~filters.COMMAND, order_flow.get_topic),
+                CallbackQueryHandler(order_flow.start_order, pattern="^back_to_type$"),
+                CallbackQueryHandler(order_flow.get_topic, pattern="^no_topic$")
             ],
             order_flow.DEADLINE: [CallbackQueryHandler(order_flow.get_deadline, pattern="^time_|^back_to_topic$")],
             order_flow.UPSELL: [CallbackQueryHandler(order_flow.get_upsell, pattern="^toggle_|^upsell_done$|^back_to_deadline$")],
