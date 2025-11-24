@@ -1,5 +1,6 @@
 import sqlite3
 import logging
+from datetime import datetime, timedelta
 from config import DB_PATH
 
 ALLOWED_STATUSES = {
@@ -56,6 +57,8 @@ def _ensure_user_columns(cursor):
     _ensure_column(cursor, "users", "referrer_id", "referrer_id INTEGER DEFAULT 0")
     _ensure_column(cursor, "users", "is_alive", "is_alive INTEGER DEFAULT 1")
     _ensure_column(cursor, "users", "agreed_to_rules", "agreed_to_rules INTEGER DEFAULT 0")
+    _ensure_column(cursor, "users", "last_bonus_time", "last_bonus_time TIMESTAMP")
+    _ensure_column(cursor, "users", "bonus_streak", "bonus_streak INTEGER DEFAULT 0")
     if not _column_exists(cursor, "users", "joined_at"):
         # SQLite не позволяет добавлять колонку с выражением по умолчанию через ALTER,
         # поэтому добавляем без дефолта и заполняем существующие записи вручную.
@@ -211,6 +214,8 @@ def init_db():
                 referrer_id INTEGER DEFAULT 0,
                 is_alive INTEGER DEFAULT 1,
                 agreed_to_rules INTEGER DEFAULT 0,
+                last_bonus_time TIMESTAMP,
+                bonus_streak INTEGER DEFAULT 0,
                 joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """
@@ -414,7 +419,9 @@ async def get_user(user_id):
                    COALESCE(referrer_id, 0) as referrer_id,
                    COALESCE(is_alive, 1) as is_alive,
                    COALESCE(agreed_to_rules, 0) as agreed_to_rules,
-                   joined_at
+                   joined_at,
+                   last_bonus_time,
+                   COALESCE(bonus_streak, 0) as bonus_streak
             FROM users WHERE user_id = ?
             """,
             (user_id,),
@@ -433,8 +440,76 @@ async def get_user(user_id):
                 "is_alive": row[8],
                 "agreed_to_rules": row[9],
                 "joined_at": row[10],
+                "last_bonus_time": row[11],
+                "bonus_streak": row[12],
             }
         return None
+    finally:
+        conn.close()
+
+
+def _parse_ts(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value))
+    except Exception:
+        try:
+            return datetime.strptime(str(value), "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return None
+
+
+async def check_bonus_status(user_id):
+    conn = await get_connection()
+    try:
+        cursor = conn.cursor()
+        _ensure_user_columns(cursor)
+        conn.commit()
+
+        cursor = conn.execute(
+            "SELECT last_bonus_time, COALESCE(bonus_streak, 0) FROM users WHERE user_id = ?",
+            (user_id,),
+        )
+        row = cursor.fetchone()
+        last_bonus_raw = row[0] if row else None
+        streak = row[1] if row else 0
+
+        last_bonus = _parse_ts(last_bonus_raw)
+        now = datetime.utcnow()
+
+        if not last_bonus:
+            return {"available": True, "next_streak": max(1, streak or 1), "cooldown_seconds": 0}
+
+        elapsed = now - last_bonus
+
+        if elapsed < timedelta(hours=24):
+            remaining = timedelta(hours=24) - elapsed
+            return {
+                "available": False,
+                "next_streak": streak,
+                "cooldown_seconds": int(remaining.total_seconds()),
+            }
+
+        if elapsed <= timedelta(hours=48):
+            return {"available": True, "next_streak": streak + 1, "cooldown_seconds": 0}
+
+        # Больше 48 часов — сброс серии
+        conn.execute("UPDATE users SET bonus_streak = 0 WHERE user_id = ?", (user_id,))
+        conn.commit()
+        return {"available": True, "next_streak": 0, "cooldown_seconds": 0}
+    finally:
+        conn.close()
+
+
+async def record_bonus_claim(user_id, streak):
+    conn = await get_connection()
+    try:
+        conn.execute(
+            "UPDATE users SET last_bonus_time = CURRENT_TIMESTAMP, bonus_streak = ? WHERE user_id = ?",
+            (streak, user_id),
+        )
+        conn.commit()
     finally:
         conn.close()
 

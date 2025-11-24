@@ -1,4 +1,6 @@
 import asyncio
+import random
+from datetime import datetime
 from typing import Any
 
 from telegram import Update, CallbackQuery
@@ -123,6 +125,19 @@ async def _ensure_rules(update: Update, context: Any):
         return False
     return True
 
+
+async def _profile_markup(user_id: int):
+    status = await db.check_bonus_status(user_id)
+    return kb.profile_kb(status)
+
+
+def _format_cooldown_label(seconds: int | float) -> str:
+    if not seconds or seconds < 0:
+        return "0ч 0м"
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    return f"{hours}ч {minutes}м"
+
 async def start(update: Update, context: Any):
     user = update.effective_user
 
@@ -191,6 +206,15 @@ async def accept_rules(update: Update, context: Any):
     )
 
 
+async def _play_slots_animation(query: CallbackQuery, final_text: str, markup):
+    frames = ["🎰 ▫️ ▫️ ▫️", "🎰 🍒 ▫️ ▫️", "🎰 🍒 🍋 ▫️"]
+    for frame in frames:
+        await _safe_edit(query, frame, reply_markup=markup)
+        await asyncio.sleep(0.6)
+
+    await _safe_edit(query, final_text, reply_markup=markup, parse_mode="HTML")
+
+
 async def profile(update: Update, context: Any):
     query = update.callback_query
     await query.answer()
@@ -214,7 +238,95 @@ async def profile(update: Update, context: Any):
         f"До следующего звания: {amount_needed} RUB\n\n"
         f"<i>Всего инвестировано в спокойствие: {total_spent} RUB</i>"
     )
-    await _safe_edit(query, txt, reply_markup=kb.profile_kb(), parse_mode="HTML")
+    markup = await _profile_markup(query.from_user.id)
+    await _safe_edit(query, txt, reply_markup=markup, parse_mode="HTML")
+
+
+async def play_daily_bonus(update: Update, context: Any):
+    query = update.callback_query
+    await query.answer()
+
+    allowed = await _ensure_rules(update, context)
+    if not allowed:
+        return ConversationHandler.END
+
+    status = await db.check_bonus_status(query.from_user.id)
+    if not status.get("available"):
+        cooldown = _format_cooldown_label(status.get("cooldown_seconds", 0))
+        await query.answer(f"⏳ Еще {cooldown}", show_alert=True)
+        return
+
+    user = await db.get_user(query.from_user.id)
+    total_spent = user.get("total_spent", 0) or 0
+    current_streak = status.get("next_streak") or 0
+
+    if total_spent > 15000:
+        tier = 2
+        multiplier = 1.5
+    elif total_spent > 0:
+        tier = 1
+        multiplier = 1.2
+    else:
+        tier = 0
+        multiplier = 1.0
+
+    base = random.randint(10, 20)
+    streak_bonus = min(current_streak * 5, 50)
+    prize_points = int((base + streak_bonus) * multiplier)
+
+    jackpot_roll = random.random()
+    super_rare_roll = random.random()
+    display_day = current_streak if current_streak > 0 else 1
+
+    tier_lines = {
+        0: "🔸 Неплохо для начала! На пару патронов хватит.",
+        1: "🍀 Салун подливает постоянным гостям.",
+        2: "🥃 Шериф угощает лучшего клиента!",
+    }
+
+    header = "🎰 <b>ОДНОРУКИЙ БАНДИТ</b>\n\n"
+
+    if tier == 2 and super_rare_roll < 0.0005:
+        reward_text = (
+            f"{header}🍾 <b>СУПЕР-УДАЧА!</b>\n"
+            "Бесплатная речь/презентация к следующему заказу. Напиши шерифу, чтобы зафиксировать подарок.\n\n"
+            f"День серии: {display_day}\n{tier_lines[2]}"
+        )
+        await db.record_bonus_claim(query.from_user.id, current_streak)
+        markup = await _profile_markup(query.from_user.id)
+        return await _play_slots_animation(query, reward_text, markup)
+
+    if jackpot_roll < 0.005:
+        if tier == 0:
+            promo_code = f"SALOON{query.from_user.id}{int(datetime.utcnow().timestamp())}"
+            promo_code = promo_code[-16:]
+            await db.add_promo_code(promo_code, 15, 1)
+            reward_text = (
+                f"{header}🍀 <b>ДЖЕКПОТ!</b>\n"
+                f"Промокод на 15%: <code>{promo_code}</code>\n\n"
+                f"День серии: {display_day}\n{tier_lines[0]}"
+            )
+        else:
+            prize_points = 500
+            await db.adjust_balance(query.from_user.id, prize_points, "daily_bonus_jackpot")
+            reward_text = (
+                f"{header}🍀 <b>ДЖЕКПОТ!</b>\n"
+                f"+{prize_points} баллов падает на баланс!\n\n"
+                f"День серии: {display_day}\n{tier_lines[tier]}"
+            )
+
+        await db.record_bonus_claim(query.from_user.id, current_streak)
+        markup = await _profile_markup(query.from_user.id)
+        return await _play_slots_animation(query, reward_text, markup)
+
+    await db.adjust_balance(query.from_user.id, prize_points, "daily_bonus")
+    await db.record_bonus_claim(query.from_user.id, current_streak)
+    reward_text = (
+        f"{header}День {display_day}: +{prize_points} баллов на баланс.\n\n"
+        f"{tier_lines[tier]}"
+    )
+    markup = await _profile_markup(query.from_user.id)
+    await _play_slots_animation(query, reward_text, markup)
 
 
 async def open_safe(update: Update, context: Any):
@@ -278,9 +390,10 @@ async def submit_promo_code(update: Update, context: Any):
         )
         return PROMO_STATE
 
+    markup = await _profile_markup(user.id)
     await update.message.reply_text(
         "💰 Промокод принят! Твой баланс пополнен.",
-        reply_markup=kb.profile_kb(),
+        reply_markup=markup,
         parse_mode="HTML",
     )
     return ConversationHandler.END
@@ -415,7 +528,8 @@ async def my_history(update: Update, context: Any):
         return ConversationHandler.END
     orders = await db.get_user_orders(query.from_user.id)
     if not orders:
-        await _safe_edit(query, "📂 <b>Архив пуст.</b>", reply_markup=kb.profile_kb(), parse_mode="HTML")
+        markup = await _profile_markup(query.from_user.id)
+        await _safe_edit(query, "📂 <b>Архив пуст.</b>", reply_markup=markup, parse_mode="HTML")
     else:
         trimmed = orders[:5]
         history_markup = builders.create_orders_history_keyboard(trimmed)
@@ -462,7 +576,7 @@ async def hide_order_confirm(update: Update, context: Any):
     await _safe_edit(
         query,
         "🗑 Заказ скрыт из истории. Остальные дела ждут тебя в архиве.",
-        reply_markup=kb.profile_kb(),
+        reply_markup=await _profile_markup(query.from_user.id),
         parse_mode="HTML",
     )
 

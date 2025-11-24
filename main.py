@@ -89,6 +89,7 @@ def main():
     app.add_handler(CallbackQueryHandler(client.accept_rules, pattern="^rules_accept$"))
     app.add_handler(CallbackQueryHandler(client.profile, pattern="^profile$"))
     app.add_handler(CallbackQueryHandler(client.profile, pattern="^open_profile$"))
+    app.add_handler(CallbackQueryHandler(client.play_daily_bonus, pattern="^daily_bonus$"))
     app.add_handler(CallbackQueryHandler(client.show_price_list, pattern="^price_list$"))
     app.add_handler(CallbackQueryHandler(client.back_to_main_menu, pattern="^back_to_main_menu$"))
     app.add_handler(CallbackQueryHandler(client.show_price_card, pattern="^price_srv_"))

@@ -64,10 +64,30 @@ def points_choice_kb(points: int):
     )
 
 
-def profile_kb():
+def _format_cooldown(seconds: int | float) -> str:
+    if not seconds or seconds < 0:
+        return "0ч 0м"
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    return f"{hours}ч {minutes}м"
+
+
+def profile_kb(bonus_status: dict | None = None):
+    btn_text = "🎰 Испытать удачу"
+    if bonus_status:
+        if bonus_status.get("available"):
+            day = bonus_status.get("next_streak") or 1
+            if day <= 0:
+                day = 1
+            btn_text = f"🎰 Испытать удачу (День {day})"
+        else:
+            cooldown = _format_cooldown(bonus_status.get("cooldown_seconds", 0))
+            btn_text = f"⏳ Таймер: {cooldown}"
+
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("📦 Мои заказы", callback_data="my_history")],
+            [InlineKeyboardButton(btn_text, callback_data="daily_bonus")],
             [InlineKeyboardButton("🗄 Мой Сейф", callback_data="my_safe")],
             [InlineKeyboardButton("📜 История золота", callback_data="my_transactions")],
             [InlineKeyboardButton("🎟 Ввести промокод", callback_data="enter_promo")],
