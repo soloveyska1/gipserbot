@@ -1,181 +1,334 @@
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 from database import core as db
-from keyboards import menu as kb
-from config import SERVICES, URGENCY_MULTIPLIER, PRICE_SPEECH, PRICE_PRES, PRICE_VIP, ADMIN_IDS
+from database import db as catalog_db
+from keyboards import client_kb as kb
+from config import SERVICES, URGENCY_MULTIPLIER, ADMIN_IDS
+import datetime
 
-MSG_UPSELL = "🛡 <b>ДОПОЛНИТЕЛЬНАЯ ЗАЩИТА</b>\nХотите добавить броню к вашему заказу?"
+# Определение состояний (должно совпадать с main.py)
+TYPE, SERVICE_CARD, TOPIC, DEADLINE, UPSELL, PAY_CHOICE, CONFIRM, CONSULT = range(8)
 
-TYPE, TOPIC, DEADLINE, UPSELL, CONFIRM = range(5)
+async def _safe_edit(query, text, **kwargs):
+    try:
+        await query.edit_message_text(text, **kwargs)
+    except:
+        await query.message.reply_text(text, **kwargs)
 
-# 1. Выбор типа
+# === 1. НАЧАЛО ЗАКАЗА ===
 async def start_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
-    await query.edit_message_text(
-        "💼 <b>ШАГ 1/4: ОБЪЕКТ РАБОТЫ</b>\nВыберите тип задачи:", 
-        reply_markup=kb.services_kb(), parse_mode="HTML"
-    )
+    if query: await query.answer()
+    
+    # Сбрасываем данные заказа
+    context.user_data['order'] = {}
+    
+    services = await catalog_db.get_all_services()
+    if not services:
+        txt = "⚠️ Сейчас нет доступных услуг. Напишите шерифу."
+        if query: await _safe_edit(query, txt, reply_markup=kb.main_kb(update.effective_user.id))
+        else: await update.message.reply_text(txt, reply_markup=kb.main_kb(update.effective_user.id))
+        return ConversationHandler.END
+
+    # Генерируем клавиатуру услуг
+    keyboard = []
+    for s in services:
+        keyboard.append([InlineKeyboardButton(f"{s['name']}", callback_data=f"srv_{s['id']}")])
+    keyboard.append([InlineKeyboardButton("🆘 Нужна консультация", callback_data="consultation_request")])
+    keyboard.append([InlineKeyboardButton("🏠 В меню", callback_data="home")])
+    
+    txt = "💼 <b>ШАГ 1: ВЫБОР ДЕЛА</b>\nКакую работу нужно выполнить?"
+    
+    if query:
+        await _safe_edit(query, txt, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+    else:
+        await update.message.reply_text(txt, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
     return TYPE
 
-# 2. Ввод темы
+# === 2. ВЫБОР ТИПА И ПОКАЗ КАРТОЧКИ ===
 async def get_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    if query.data == "home": return ConversationHandler.END
+    data = query.data
     
-    sType = query.data.split("_")[1]
-    context.user_data['o_type'] = sType
-    srv = SERVICES[sType]
+    if data == "consultation_request":
+        await _safe_edit(query, "👨‍✈️ <b>КОНСУЛЬТАЦИЯ</b>\n\nОпишите вашу проблему одним сообщением (можно прикрепить фото/файл). Шериф ответит лично.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="consult_cancel")]]), parse_mode="HTML")
+        return CONSULT
     
-    await query.edit_message_text(
-        f"✅ Выбрано: <b>{srv['name']}</b>\n\n"
-        f"📝 <b>ШАГ 2/4: ТЕХНИЧЕСКОЕ ЗАДАНИЕ</b>\n"
-        f"Напишите тему работы, прикрепите файл или перешлите сообщение преподавателя.",
+    srv_id = int(data.split("_")[1])
+    service = await catalog_db.get_service(srv_id)
+    
+    context.user_data['order']['service_id'] = srv_id
+    context.user_data['order']['service_name'] = service['name']
+    context.user_data['order']['base_price'] = service['price']
+    
+    # Карточка услуги
+    txt = (
+        f"✅ <b>{service['name']}</b>\n\n"
+        f"{service.get('description', 'Описание отсутствует')}\n\n"
+        f"💰 Базовая цена: <b>{service['price']} ₽</b>\n"
+        f"👇 Подтвердите выбор, чтобы перейти к деталям."
+    )
+    
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Выбрать эту услугу", callback_data=f"srv_confirm_{srv_id}")],
+        [InlineKeyboardButton("🔙 Назад к списку", callback_data="back_to_type")]
+    ])
+    
+    await _safe_edit(query, txt, reply_markup=markup, parse_mode="HTML")
+    return SERVICE_CARD
+
+async def confirm_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if "srv_back" in query.data:
+        return await start_order(update, context)
+        
+    await _safe_edit(
+        query,
+        "📝 <b>ШАГ 2: ЗАДАНИЕ</b>\n\nНапишите тему работы, прикрепите методичку или опишите требования.\n\n<i>Отправьте сообщение или файл...</i>",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_type")]]),
         parse_mode="HTML"
     )
     return TOPIC
 
-# 3. Дедлайн (Срочность)
+# === 3. ТЕМА И ФАЙЛЫ ===
 async def get_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Ловим текст или файл
-    content = update.message.text if update.message.text else "[Вложение/Файл]"
-    context.user_data['o_topic'] = content
+    text = update.message.caption or update.message.text or "[Файл]"
+    context.user_data['order']['topic'] = text
+    
+    # Если есть файл, можно сохранить его ID (логику сохранения опустим для простоты, берем текст)
     
     await update.message.reply_text(
-        "⏳ <b>ШАГ 3/4: ФАКТОР ВРЕМЕНИ</b>\n"
-        "Насколько критична ситуация?",
-        reply_markup=kb.deadline_kb(), parse_mode="HTML"
+        "⏳ <b>ШАГ 3: СРОКИ</b>\nНасколько это срочно?",
+        reply_markup=kb.deadline_kb(),
+        parse_mode="HTML"
     )
     return DEADLINE
 
-# 4. Апселл (Допродажа)
+# === 4. ДЕДЛАЙН ===
 async def get_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
     if query.data == "back_to_topic":
-        # Возврат назад не реализован для упрощения, просто просим тему заново
-        await query.edit_message_text("📝 Введите тему заново:")
+        await _safe_edit(query, "📝 Жду тему или файлы...", reply_markup=None)
         return TOPIC
-
-    is_urgent = 1 if query.data == "time_urgent" else 0
-    context.user_data['o_urgent'] = is_urgent
+        
+    is_urgent = (query.data == "time_urgent")
+    context.user_data['order']['is_urgent'] = is_urgent
+    context.user_data['order']['deadline_text'] = "Срочно (1-3 дня)" if is_urgent else "В штатном режиме"
     
-    # Инициализируем апселлы
-    context.user_data['upsell_speech'] = 0
-    context.user_data['upsell_pres'] = 0
-    context.user_data['upsell_vip'] = 0
-
-    await query.edit_message_text(
-        MSG_UPSELL, 
-        reply_markup=kb.upsell_kb(0, 0, 0, PRICE_SPEECH, PRICE_PRES, PRICE_VIP), 
-        parse_mode="HTML"
-    )
+    # Инициализация допов
+    context.user_data['order']['upsells'] = {'speech': False, 'pres': False, 'vip': False}
+    
+    await _update_upsell_message(query, context)
     return UPSELL
 
-# 5. Обработка кнопок апселла и финал
+# === 5. UPSELL (ДОПЫ) ===
+async def _update_upsell_message(query, context):
+    ups = context.user_data['order']['upsells']
+    
+    # Цены допов (можно вынести в конфиг)
+    P_SPEECH = 1500
+    P_PRES = 2000
+    P_VIP = 2500
+    
+    await _safe_edit(
+        query,
+        "➕ <b>ШАГ 4: ДОПОЛНИТЕЛЬНО</b>\nНужно что-то еще?",
+        reply_markup=kb.upsell_kb(ups['speech'], ups['pres'], ups['vip'], P_SPEECH, P_PRES, P_VIP),
+        parse_mode="HTML"
+    )
+
 async def get_upsell(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
-
+    
     if data == "back_to_deadline":
-        await query.edit_message_text("⏳ Выберите срочность:", reply_markup=kb.deadline_kb(), parse_mode="HTML")
+        await _safe_edit(query, "⏳ Выберите срочность:", reply_markup=kb.deadline_kb())
         return DEADLINE
-
+        
     if data == "upsell_done":
-        # КАЛЬКУЛЯТОР
-        d = context.user_data
-        base = SERVICES[d['o_type']]['base']
+        return await calculate_final(query, context)
         
-        # Наценки
-        price = base
-        if d.get('o_urgent'): price *= URGENCY_MULTIPLIER
-        
-        # Допы
-        if d.get('upsell_speech'): price += PRICE_SPEECH
-        if d.get('upsell_pres'): price += PRICE_PRES
-        if d.get('upsell_vip'): price += PRICE_VIP
-        
-        price = int(price) # Округляем
-        context.user_data['o_price'] = price
-        
-        # Формируем красивый чек
-        srv_name = SERVICES[d['o_type']]['name']
-        urg_txt = "⚡️ СРОЧНО" if d.get('o_urgent') else "📅 Стандарт"
-        
-        # Список допов
-        extras = []
-        if d.get('upsell_speech'): extras.append("🎤 Речь")
-        if d.get('upsell_pres'): extras.append("💻 Презентация")
-        if d.get('upsell_vip'): extras.append("👑 VIP")
-        extra_txt = ", ".join(extras) if extras else "Нет"
-        
-        txt = (
-            f"🧾 <b>ПРЕДВАРИТЕЛЬНАЯ СМЕТА</b>\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"📎 Услуга: {srv_name}\n"
-            f"⏳ Сроки: {urg_txt}\n"
-            f"➕ Допы: {extra_txt}\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"💰 <b>ИТОГО К ОПЛАТЕ: {price} ₽</b>\n\n"
-            f"⚠️ <i>Нажимая «Подтвердить», вы отправляете заявку менеджеру. Оплата производится после согласования деталей.</i>"
-        )
-        await query.edit_message_text(txt, reply_markup=kb.confirm_kb(), parse_mode="HTML")
-        return CONFIRM
+    # Переключатели
+    ups = context.user_data['order']['upsells']
+    if data == "toggle_speech": ups['speech'] = not ups['speech']
+    elif data == "toggle_pres": ups['pres'] = not ups['pres']
+    elif data == "toggle_vip": ups['vip'] = not ups['vip']
+    
+    await _update_upsell_message(query, context)
+    return UPSELL
 
-    # Переключение галочек (Toggle)
-    if data.startswith("toggle_"):
-        what = data.split("_")[1] # speech, pres, vip
-        key = f"upsell_{what}"
-        # Инвертируем (0 -> 1, 1 -> 0)
-        context.user_data[key] = 1 - context.user_data.get(key, 0)
-        
-        # Обновляем клавиатуру
-        s = context.user_data.get('upsell_speech', 0)
-        p = context.user_data.get('upsell_pres', 0)
-        v = context.user_data.get('upsell_vip', 0)
-        
-        await query.edit_message_reply_markup(
-            reply_markup=kb.upsell_kb(s, p, v, PRICE_SPEECH, PRICE_PRES, PRICE_VIP)
+# === 6. РАСЧЕТ И ОПЛАТА ===
+async def calculate_final(query, context):
+    o = context.user_data['order']
+    
+    # Расчет цены
+    price = o['base_price']
+    if o['is_urgent']: price = int(price * URGENCY_MULTIPLIER)
+    
+    extras = 0
+    if o['upsells']['speech']: extras += 1500
+    if o['upsells']['pres']: extras += 2000
+    if o['upsells']['vip']: extras += 2500
+    
+    total = price + extras
+    o['price_calculated'] = total
+    o['final_price'] = total
+    o['points_used'] = 0
+    
+    # Проверка баллов
+    user_db = await db.get_user(query.from_user.id)
+    balance = user_db.get('balance', 0)
+    
+    # Логика: можно оплатить до 50% баллами
+    max_discount = int(total * 0.5)
+    can_use = min(balance, max_discount)
+    
+    context.user_data['order']['can_use_points'] = can_use
+    
+    if can_use > 0:
+        await _safe_edit(
+            query,
+            f"💰 <b>К ОПЛАТЕ: {total} ₽</b>\n\n"
+            f"У вас есть <b>{balance}</b> баллов.\n"
+            f"Можно списать: <b>{can_use}</b> баллов.\n\n"
+            f"Использовать их?",
+            reply_markup=kb.points_choice_kb(can_use),
+            parse_mode="HTML"
         )
-        return UPSELL
+        return PAY_CHOICE
+    else:
+        # Сразу к подтверждению
+        return await show_confirm(query, context)
 
-# 6. Отправка
+async def handle_payment_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    o = context.user_data['order']
+    if query.data == "use_points_yes":
+        points = o['can_use_points']
+        o['points_used'] = points
+        o['final_price'] = o['price_calculated'] - points
+    
+    return await show_confirm(query, context)
+
+async def show_confirm(query, context):
+    o = context.user_data['order']
+    
+    ups_text = []
+    if o['upsells']['speech']: ups_text.append("Речь")
+    if o['upsells']['pres']: ups_text.append("Презентация")
+    if o['upsells']['vip']: ups_text.append("VIP")
+    ups_str = ", ".join(ups_text) if ups_text else "Нет"
+    
+    txt = (
+        f"🧾 <b>ИТОГОВАЯ СМЕТА</b>\n"
+        f"━━━━━━━━━━━━━━━━\n"
+        f"📚 Услуга: {o['service_name']}\n"
+        f"⏳ Срок: {o['deadline_text']}\n"
+        f"➕ Допы: {ups_str}\n"
+        f"📝 Тема: {o['topic'][:50]}...\n"
+        f"━━━━━━━━━━━━━━━━\n"
+        f"💵 Цена: {o['price_calculated']} ₽\n"
+        f"💎 Списание баллов: -{o['points_used']}\n"
+        f"💰 <b>ИТОГО: {o['final_price']} ₽</b>\n\n"
+        f"🚀 <i>Подтвердите заказ, чтобы отправить его менеджеру.</i>"
+    )
+    
+    await _safe_edit(query, txt, reply_markup=kb.confirm_kb(), parse_mode="HTML")
+    return CONFIRM
+
+# === 7. ФИНАЛИЗАЦИЯ ===
 async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    user = query.from_user
-    d = context.user_data
+    await query.answer()
     
     if query.data == "home":
-        await query.edit_message_text("❌ Отменено", reply_markup=kb.main_kb(user.id))
+        await _safe_edit(query, "🏠 Заказ отменен.", reply_markup=kb.main_kb(query.from_user.id))
         return ConversationHandler.END
-
+        
+    o = context.user_data['order']
+    user = query.from_user
+    
     # Сохраняем в БД
     order_data = {
-        'uid': user.id, 'type': d['o_type'], 'topic': d['o_topic'],
-        'deadline': "Urgent" if d.get('o_urgent') else "Normal",
-        'price': d['o_price']
+        'uid': user.id,
+        'type': o['service_name'], # Сохраняем имя услуги как тип
+        'topic': o['topic'],
+        'deadline': o['deadline_text'],
+        'final_price': o['final_price'],
+        'original_price': o['price_calculated'],
+        'points_used': o['points_used'],
+        'promo_code': None 
+    }
+    
+    # Создаем заказ
+    oid = await db.create_order(order_data)
+    
+    # Списываем баллы у юзера если использовал
+    if o['points_used'] > 0:
+        await db.adjust_balance(user.id, -o['points_used'], f"Оплата заказа #{oid}")
+
+    # Уведомляем Админа
+    admin_txt = (
+        f"🚨 <b>НОВЫЙ ЗАКАЗ #{oid}</b>\n"
+        f"👤 <a href='tg://user?id={user.id}'>{user.full_name}</a>\n"
+        f"💵 Сумма: {o['final_price']} ₽\n"
+        f"📚 Услуга: {o['service_name']}\n"
+        f"⏳ Дедлайн: {o['deadline_text']}"
+    )
+    
+    for admin_id in ADMIN_IDS:
+        try: await context.bot.send_message(admin_id, admin_txt, parse_mode="HTML")
+        except: pass
+
+    await _safe_edit(
+        query,
+        f"✅ <b>ЗАКАЗ #{oid} ПРИНЯТ!</b>\n\nМенеджер уже изучает детали. Ожидайте сообщения.",
+        reply_markup=kb.main_kb(user.id),
+        parse_mode="HTML"
+    )
+    return ConversationHandler.END
+
+# === КОНСУЛЬТАЦИЯ ===
+async def handle_consultation_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    text = update.message.text or update.message.caption or "Файл/Фото"
+    
+    # Создаем "пустой" заказ типа Консультация
+    order_data = {
+        'uid': user.id,
+        'type': "Консультация",
+        'topic': text[:200],
+        'deadline': "Не указан",
+        'final_price': 0,
+        'original_price': 0,
+        'points_used': 0,
+        'promo_code': None
     }
     oid = await db.create_order(order_data)
     
-    # Уведомляем Админов
-    adm_msg = (
-        f"🚨 <b>НОВАЯ ЗАЯВКА #{oid}</b>\n"
-        f"👤: <a href='tg://user?id={user.id}'>{user.full_name}</a> (@{user.username})\n"
-        f"💵: <b>{d['o_price']} ₽</b>\n"
-        f"📝: {d['o_topic']}\n"
-        f"⚡️: {d['o_urgent']}"
-    )
+    # Шлем админу
+    msg = f"🆘 <b>ЗАПРОС КОНСУЛЬТАЦИИ #{oid}</b>\n👤 {user.full_name}\n❓ {text}"
     for admin_id in ADMIN_IDS:
-        try: await context.bot.send_message(admin_id, adm_msg, parse_mode="HTML")
+        try: await context.bot.send_message(admin_id, msg, parse_mode="HTML")
         except: pass
-    
-    await query.edit_message_text(
-        f"✅ <b>ЗАЯВКА #{oid} ПРИНЯТА В РАБОТУ</b>\n\n"
-        f"Менеджер (Семён Юрьевич) получил уведомление. Ожидайте сообщения в ближайшее время.\n\n"
-        f"<i>Совет: Пока ждете, можете скинуть ссылку другу и заработать на его заказе.</i>",
+        
+    await update.message.reply_text(
+        f"✅ <b>Запрос #{oid} отправлен.</b>\nШериф скоро свяжется с вами.",
+        reply_markup=kb.main_kb(user.id),
         parse_mode="HTML"
     )
+    return ConversationHandler.END
+
+async def cancel_consultation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await _safe_edit(query, "🏠 Возвращаемся в Салун...", reply_markup=kb.main_kb(update.effective_user.id))
     return ConversationHandler.END

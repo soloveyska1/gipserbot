@@ -1,20 +1,15 @@
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from config import SERVICES, ADMIN_IDS, CHANNEL_LINK
+from config import SERVICES, ADMIN_IDS
 
 # === КЛИЕНТСКИЕ КЛАВИАТУРЫ ===
 
 def main_kb(user_id):
-    admin_btn = []
-    # Проверяем, админ ли юзер
-    if user_id in ADMIN_IDS:
-        admin_btn = [[InlineKeyboardButton("💀 GOD MODE (АДМИНКА)", callback_data="admin_panel")]]
-
     kb = [
         [InlineKeyboardButton("🔥 СДЕЛАТЬ ЗАКАЗ", callback_data="order_start")],
-        [InlineKeyboardButton("👤 Личный кабинет", callback_data="profile"), InlineKeyboardButton("💬 Оставить отзыв", callback_data="write_review")],
-        [InlineKeyboardButton("🕸 Партнерка (15%)", callback_data="partners"), InlineKeyboardButton("👨‍💻 Саппорт", url=f"tg://user?id={ADMIN_IDS[0]}")],
-        [InlineKeyboardButton("👁 Читать отзывы", url=CHANNEL_LINK)]
-    ] + admin_btn
+        [InlineKeyboardButton("📜 Меню (Цены)", callback_data="price_list"), InlineKeyboardButton("🤠 Мое Досье", callback_data="profile")],
+        [InlineKeyboardButton("⚖️ Кодекс Чести (Гарантии)", callback_data="code_honor"), InlineKeyboardButton("👀 Слухи (Отзывы)", url="https://t.me/+Cls1cEPgPcMyZDJi")],
+        [InlineKeyboardButton("⭐ Позвать Шерифа (Саппорт)", url=f"tg://user?id={ADMIN_IDS[0]}")]
+    ]
     return InlineKeyboardMarkup(kb)
 
 def services_kb():
@@ -52,11 +47,18 @@ def confirm_kb():
         [InlineKeyboardButton("❌ Отмена", callback_data="home")]
     ])
 
+def points_choice_kb(points: int):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"✅ Использовать {points} баллов", callback_data="use_points_yes")],
+        [InlineKeyboardButton("❌ Нет, оплачу полностью", callback_data="use_points_no")]
+    ])
+
 def profile_kb():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📂 Мои заказы", callback_data="my_history")],
-        [InlineKeyboardButton("💰 Транзакции", callback_data="my_transactions")],
-        [InlineKeyboardButton("🔙 В меню", callback_data="home")]
+        [InlineKeyboardButton("📦 Мои заказы", callback_data="my_history")],
+        [InlineKeyboardButton("💰 Партнерка (15%)", callback_data="partners")],
+        [InlineKeyboardButton("✍️ Написать отзыв", callback_data="write_review")],
+        [InlineKeyboardButton("🔙 В главное меню", callback_data="home")]
     ])
 
 def history_kb(orders):
@@ -68,15 +70,8 @@ def history_kb(orders):
     return InlineKeyboardMarkup(kb)
 
 def order_details_kb(oid, status="review"):
-    actions = []
-    if status in ["work", "review"]:
-        actions.append(InlineKeyboardButton("✅ Подтвердить выполнение", callback_data=f"cli_approve_{oid}"))
-    
-    actions.append(InlineKeyboardButton("🗑 Скрыть из списка", callback_data=f"cli_delete_{oid}"))
-
     kb = [
         [InlineKeyboardButton("💬 ЧАТ С МЕНЕДЖЕРОМ", callback_data=f"chat_order_{oid}")],
-        actions,
         [InlineKeyboardButton("🔙 Назад", callback_data="my_history")]
     ]
     return InlineKeyboardMarkup(kb)
@@ -123,9 +118,24 @@ def admin_orders_list_kb(orders, page=0):
     end = start + 5
     current_orders = orders[start:end]
     
+    status_emoji = {
+        "checking": "🟡",
+        "pending_pay": "💳",
+        "work": "⚙️",
+        "norm_control": "🧭",
+        "edits": "✏️",
+        "suspended": "⏸",
+        "done": "✅",
+        "cancel": "❌",
+    }
+
     for o in current_orders:
-        status_emoji = {"review": "🟡", "pending_pay": "💳", "work": "⚙️", "done": "✅", "cancel": "❌"}
-        kb.append([InlineKeyboardButton(f"{status_emoji.get(o['status'], '?')} #{o['id']} | {o['price']}₽", callback_data=f"adm_order_{o['id']}")])
+        kb.append([
+            InlineKeyboardButton(
+                f"{status_emoji.get(o['status'], '?')} #{o['id']} | {o['price']}₽",
+                callback_data=f"adm_order_{o['id']}",
+            )
+        ])
     
     nav = []
     if page > 0: nav.append(InlineKeyboardButton("⬅️", callback_data=f"adm_ord_page_{page-1}"))
@@ -140,9 +150,22 @@ def admin_order_actions(oid, status):
         [InlineKeyboardButton("💬 ЧАТ ЗАКАЗА", callback_data=f"adm_chat_{oid}")],
         [InlineKeyboardButton("⚙️ В работу", callback_data=f"set_status_{oid}_work"), InlineKeyboardButton("✅ Выполнен", callback_data=f"set_status_{oid}_done")],
         [InlineKeyboardButton("💳 Ждет оплаты", callback_data=f"set_status_{oid}_pending_pay"), InlineKeyboardButton("❌ Отменить", callback_data=f"set_status_{oid}_cancel")],
+        [InlineKeyboardButton("🧭 Нормконтроль", callback_data=f"set_status_{oid}_norm_control"), InlineKeyboardButton("✏️ Правки", callback_data=f"set_status_{oid}_edits")],
+        [InlineKeyboardButton("⏸ Приостановить", callback_data=f"set_status_{oid}_suspended")],
         [InlineKeyboardButton("🔙 Назад к списку", callback_data="adm_orders_list")]
     ]
     return InlineKeyboardMarkup(kb)
+
+
+def chat_kb(oid: int, is_admin: bool):
+    """Клавиатура для внутреннего чата заказа."""
+    back_cb = "adm_orders_list" if is_admin else f"my_order_{oid}"
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("🔒 Закрыть чат", callback_data="chat_close")],
+            [InlineKeyboardButton("🔙 Назад", callback_data=back_cb)],
+        ]
+    )
 
 def settings_kb():
     kb = [
@@ -163,3 +186,9 @@ def settings_kb():
 
 def back_kb(callback_data):
     return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=callback_data)]])
+
+
+def rules_accept_kb():
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("✅ С правилами ознакомлен и согласен", callback_data="rules_accept")]]
+    )
