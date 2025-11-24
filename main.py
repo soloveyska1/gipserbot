@@ -83,17 +83,18 @@ def main():
                 CallbackQueryHandler(order_flow.get_type, pattern="^consultation_request$"),
                 CallbackQueryHandler(order_flow.get_type, pattern="^order_consult$")
             ],
-            order_flow.SERVICE_CARD: [
-                CallbackQueryHandler(order_flow.confirm_service, pattern="^srv_confirm_|^srv_back$|back_to_type")
-            ],
+            order_flow.SERVICE_CARD: [CallbackQueryHandler(order_flow.confirm_service, pattern="^back_to_services$")],
             order_flow.TOPIC: [
                 MessageHandler(filters.ALL & ~filters.COMMAND, order_flow.get_topic),
-                CallbackQueryHandler(order_flow.start_order, pattern="^back_to_type$"),
+                CallbackQueryHandler(order_flow.start_order, pattern="^back_to_services$"),
                 CallbackQueryHandler(order_flow.get_topic, pattern="^topic_help$")
             ],
-            order_flow.DEADLINE: [CallbackQueryHandler(order_flow.get_deadline, pattern="^time_|^back_to_topic$")],
-            order_flow.UPSELL: [CallbackQueryHandler(order_flow.get_upsell, pattern="^toggle_|^upsell_done$|^back_to_deadline$")],
-            order_flow.PAY_CHOICE: [CallbackQueryHandler(order_flow.handle_payment_choice, pattern="^use_points_yes$|^use_points_no$")],
+            order_flow.DEADLINE: [CallbackQueryHandler(order_flow.get_deadline, pattern="^deadline_|^back_to_topic$")],
+            order_flow.UPSELL: [CallbackQueryHandler(order_flow.get_upsell, pattern="^upsell_toggle_|^upsell_done$|^back_to_deadline$")],
+            order_flow.PAY_CHOICE: [
+                CallbackQueryHandler(order_flow.handle_payment_choice, pattern="^pay_") ,
+                MessageHandler(filters.TEXT & ~filters.COMMAND, order_flow.handle_payment_choice),
+            ],
             order_flow.CONFIRM: [CallbackQueryHandler(order_flow.confirm_order, pattern="^submit_order$|^home$")],
             order_flow.CONSULT: [
                 CallbackQueryHandler(order_flow.cancel_consultation, pattern="^consult_cancel$"),

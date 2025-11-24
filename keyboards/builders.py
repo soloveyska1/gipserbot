@@ -47,6 +47,114 @@ def admin_dashboard():
     ]
     return InlineKeyboardMarkup(kb)
 
+
+# === PREMIUM ORDER SHOWCASE ===
+def order_showcase_kb(services: list[dict]):
+    """Builds the curated Wild West showcase keyboard with priority rows."""
+
+    def find_by_keyword(keyword: str, used_ids: set[int]):
+        for svc in services:
+            if svc.get("id") in used_ids:
+                continue
+            if keyword.lower() in svc.get("name", "").lower():
+                used_ids.add(svc["id"])
+                return InlineKeyboardButton(label_for_service(svc), callback_data=f"srv_{svc['id']}")
+        return None
+
+    def find_next_unused(used_ids: set[int]):
+        for svc in services:
+            if svc.get("id") not in used_ids:
+                used_ids.add(svc["id"])
+                return InlineKeyboardButton(label_for_service(svc), callback_data=f"srv_{svc['id']}")
+        return None
+
+    def label_for_service(svc: dict) -> str:
+        name = svc.get("name", "Услуга")
+        clean = name.split("(")[0].strip()
+        emoji = ""
+        if "диплом" in name.lower():
+            emoji = "🎓 "
+        elif "курсов" in name.lower():
+            emoji = "🔥 "
+        elif "эссе" in name.lower():
+            emoji = "✍️ "
+        elif "отчет" in name.lower():
+            emoji = "📋 "
+        elif "речь" in name.lower():
+            emoji = "🎤 "
+        elif "презента" in name.lower():
+            emoji = "💻 "
+        return f"{emoji}{clean}" if emoji else clean
+
+    used: set[int] = set()
+    rows: list[list[InlineKeyboardButton]] = []
+
+    dip_btn = find_by_keyword("диплом", used)
+    if dip_btn:
+        rows.append([dip_btn])
+
+    kurs_btn = find_by_keyword("курсов", used)
+    if kurs_btn:
+        rows.append([kurs_btn])
+
+    essay_btn = find_by_keyword("эссе", used) or find_next_unused(used)
+    report_btn = find_by_keyword("отчет", used) or find_next_unused(used)
+    grid_row1 = [btn for btn in (essay_btn, report_btn) if btn]
+    if grid_row1:
+        rows.append(grid_row1)
+
+    speech_btn = find_by_keyword("речь", used) or find_next_unused(used)
+    pres_btn = find_by_keyword("презента", used) or find_next_unused(used)
+    grid_row2 = [btn for btn in (speech_btn, pres_btn) if btn]
+    if grid_row2:
+        rows.append(grid_row2)
+
+    rows.append([InlineKeyboardButton("🔙 Назад в лобби", callback_data="home")])
+    return InlineKeyboardMarkup(rows)
+
+
+def deadline_heat_kb():
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("🔥 ОГОНЬ (1-3 дня) x1.4", callback_data="deadline_hot")],
+            [InlineKeyboardButton("⚡️ В ТЕМПЕ (4-7 дней) x1.15", callback_data="deadline_fast")],
+            [InlineKeyboardButton("🐢 ЗАРАНЕЕ (Неделя+) x1.0", callback_data="deadline_calm")],
+            [InlineKeyboardButton("🔙 Назад к теме", callback_data="back_to_topic")],
+        ]
+    )
+
+
+def upsell_toggle_kb(state: dict):
+    def button(label: str, key: str, price: int):
+        prefix = "🟢 ✔" if state.get(key) else "🔴"
+        return InlineKeyboardButton(f"{prefix} {label} (+{price})", callback_data=f"upsell_toggle_{key}")
+
+    rows = [
+        [button("VIP", "vip", 2500)],
+        [button("Речь", "speech", 1500)],
+        [button("Презентация", "pres", 2000)],
+        [InlineKeyboardButton("➡️ ГОТОВО (К ОПЛАТЕ)", callback_data="upsell_done")],
+        [InlineKeyboardButton("🔙 Назад к срокам", callback_data="back_to_deadline")],
+    ]
+    return InlineKeyboardMarkup(rows)
+
+
+def payment_smart_kb(balance: int, max_discount: int):
+    rows: list[list[InlineKeyboardButton]] = []
+    if max_discount > 0 and balance >= max_discount:
+        rows.append([InlineKeyboardButton(f"💎 Списать ВСЁ ({max_discount})", callback_data="pay_all")])
+
+    partial_row: list[InlineKeyboardButton] = []
+    for step in (1000, 500):
+        if balance >= step and max_discount >= step:
+            partial_row.append(InlineKeyboardButton(f"💎 -{step}", callback_data=f"pay_minus_{step}"))
+    if partial_row:
+        rows.append(partial_row)
+
+    rows.append([InlineKeyboardButton("✍️ Своя сумма", callback_data="pay_custom")])
+    rows.append([InlineKeyboardButton("❌ Не тратить (Коплю)", callback_data="pay_skip")])
+    return InlineKeyboardMarkup(rows)
+
 def create_dynamic_service_keyboard(
     services,
     *,

@@ -1,9 +1,11 @@
+import json
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 from database import core as db
 from database import db as catalog_db
 from keyboards import client_kb as kb
-from config import SERVICES, URGENCY_MULTIPLIER, ADMIN_IDS
+from keyboards import builders as build
+from config import SERVICES, ADMIN_IDS
 import datetime
 
 # Определение состояний (должно совпадать с main.py)
@@ -18,31 +20,38 @@ async def _safe_edit(query, text, **kwargs):
 # === 1. НАЧАЛО ЗАКАЗА ===
 async def start_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    if query: await query.answer()
-    
+    if query:
+        await query.answer()
+
     # Сбрасываем данные заказа
     context.user_data['order'] = {}
-    
+
     services = await catalog_db.get_all_services()
     if not services:
         txt = "⚠️ Сейчас нет доступных услуг. Напишите шерифу."
-        if query: await _safe_edit(query, txt, reply_markup=kb.main_kb(update.effective_user.id))
-        else: await update.message.reply_text(txt, reply_markup=kb.main_kb(update.effective_user.id))
+        if query:
+            await _safe_edit(query, txt, reply_markup=kb.main_kb(update.effective_user.id))
+        else:
+            await update.message.reply_text(txt, reply_markup=kb.main_kb(update.effective_user.id))
         return ConversationHandler.END
 
-    # Генерируем клавиатуру услуг
-    keyboard = []
-    for s in services:
-        keyboard.append([InlineKeyboardButton(f"{s['name']}", callback_data=f"srv_{s['id']}")])
-    keyboard.append([InlineKeyboardButton("🆘 Нужна консультация", callback_data="consultation_request")])
-    keyboard.append([InlineKeyboardButton("🏠 В меню", callback_data="home")])
-    
-    txt = "💼 <b>ШАГ 1: ВЫБОР ДЕЛА</b>\nКакую работу нужно выполнить?"
-    
-    if query:
-        await _safe_edit(query, txt, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
-    else:
-        await update.message.reply_text(txt, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+    menu_text = (
+        "Бар открыт. Стволы смазаны. Что будем готовить сегодня, партнер? "
+        "Выбирай калибр. У нас есть всё: от легких эссе до тяжелой артиллерии."
+    )
+
+    chat_id = update.effective_chat.id
+    await context.bot.send_photo(
+        chat_id,
+        photo="AgACAgIAAxkBAAEFG0hpI9Pfsi5VGfwKuZSrGQFsslxf0wACeQtrG_RHIEk67aeU_toGxwEAAwIAA3kAAzYE",
+        caption=None,
+    )
+
+    await context.bot.send_message(
+        chat_id,
+        menu_text,
+        reply_markup=build.order_showcase_kb(services),
+    )
     return TYPE
 
 # === 2. ВЫБОР ТИПА И ПОКАЗ КАРТОЧКИ ===
@@ -50,278 +59,286 @@ async def get_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
-    
+
     if data == "consultation_request":
         await _safe_edit(query, "👨‍✈️ <b>КОНСУЛЬТАЦИЯ</b>\n\nОпишите вашу проблему одним сообщением (можно прикрепить фото/файл). Шериф ответит лично.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="consult_cancel")]]), parse_mode="HTML")
         return CONSULT
-    
+
     srv_id = int(data.split("_")[1])
     service = await catalog_db.get_service(srv_id)
-    
+
     context.user_data['order']['service_id'] = srv_id
     context.user_data['order']['service_name'] = service['name']
     context.user_data['order']['base_price'] = service['price']
-    
-    # Карточка услуги
-    txt = (
-        f"✅ <b>{service['name']}</b>\n\n"
-        f"{service.get('description', 'Описание отсутствует')}\n\n"
-        f"💰 Базовая цена: <b>{service['price']} ₽</b>\n"
-        f"👇 Подтвердите выбор, чтобы перейти к деталям."
-    )
-    
-    markup = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Выбрать эту услугу", callback_data=f"srv_confirm_{srv_id}")],
-        [InlineKeyboardButton("🔙 Назад к списку", callback_data="back_to_type")]
-    ])
-    
-    await _safe_edit(query, txt, reply_markup=markup, parse_mode="HTML")
-    return SERVICE_CARD
+
+    return await confirm_service(update, context)
 
 async def confirm_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Step 2 Prompt: Omni-Input Interface"""
     query = update.callback_query
     await query.answer()
 
-    # Reset order data if retrying
-    if "srv_back" in query.data:
+    if query.data == "back_to_services":
         return await start_order(update, context)
 
-    # THE NEW TEXT LAYOUT
     txt = (
-        "🎯 <b>ШАГ 2: ДОСЬЕ И УЛИКИ</b>\n\n"
-        "Чтобы мы попали точно в цель, нам нужна информация. "
-        "Не стесняйся, тут все свои.\n\n"
-        "<b>📥 Как можно сдать задачу:</b>\n"
-        "🎤 <b>Голосовое:</b> Просто нажми микрофон и расскажи.\n"
-        "🔄 <b>Пересылка:</b> Перешли сообщение от препода.\n"
-        "📎 <b>Файлы:</b> Кидай методички, планы, фото доски.\n"
-        "✍️ <b>Текст:</b> Напиши тему руками.\n\n"
-        "👇 <i>Жду материалы...</i>"
+        "🎯 ДОСЬЕ НА ЦЕЛЬ\n\n"
+        "Принимаю данные в любом виде. Не трать время на перепечатку.\n\n"
+        "📥 Кидай сюда:\n"
+        "• 🎙 Голосовое (расскажи суть)\n"
+        "• 📸 Фото (методички, записки)\n"
+        "• 🔄 Пересланные сообщения\n"
+        "• 📎 Файлы (Word/PDF)\n\n"
+        "👇 Жду улики..."
     )
 
-    # KEYBOARD WITH HELP BUTTON
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🤷‍♂️ У меня нет темы (Помогите)", callback_data="topic_help")],
-        [InlineKeyboardButton("🔙 Назад", callback_data="back_to_type")]
-    ])
+    markup = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("🤷‍♂️ У меня нет темы (Помощь)", callback_data="topic_help")],
+            [InlineKeyboardButton("🔙 Назад к выбору услуги", callback_data="back_to_services")],
+        ]
+    )
 
-    await _safe_edit(query, txt, reply_markup=kb, parse_mode="HTML")
+    await _safe_edit(query, txt, reply_markup=markup)
     return TOPIC
 
-# === 3. ТЕМА И ФАЙЛЫ ===
 async def get_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler for Step 2: Saves Voice, Files, or Text"""
-    # Handle "No Topic" button
     if update.callback_query and update.callback_query.data == "topic_help":
         await update.callback_query.answer()
-        context.user_data['order']['topic'] = "⚠️ ТЕМА НЕ УКАЗАНА (Клиент просит помощи)"
+        context.user_data['order']['topic'] = "⚠️ НУЖЕН МОЗГОВОЙ ШТУРМ (Подбор темы)"
         context.user_data['order']['source'] = "help_needed"
         context.user_data['order']['topic_source'] = "help_needed"
         await _safe_edit(
             update.callback_query,
-            "👌 <b>Принято.</b> Разберемся вместе.\n\n⏳ <b>ШАГ 3: СРОКИ</b>",
-            reply_markup=kb.deadline_kb(),
-            parse_mode="HTML",
+            "👌 Принято. Улики подшиты к делу.\n\nПосмотри на календарь. Насколько сильно горят мосты?",
+            reply_markup=build.deadline_heat_kb(),
         )
         return DEADLINE
 
-    # Handle Message Input
     msg = update.message
-    context.user_data['order']['source'] = "organic"
-    context.user_data['order']['topic_source'] = "text"
+    o = context.user_data.setdefault('order', {})
+    o['source'] = "organic"
 
-    # 1. Voice
     if msg.voice:
-        context.user_data['order']['voice_id'] = msg.voice.file_id
-        context.user_data['order']['topic'] = "🎤 Голосовое сообщение"
-        context.user_data['order']['topic_source'] = "voice"
-        await msg.reply_text("🎙 <b>Голосовое принято.</b> Шериф послушает.", parse_mode="HTML")
-
-    # 2. Document/Photo
+        o['voice_id'] = msg.voice.file_id
+        o['topic'] = "🎤 Голосовое сообщение"
+        o['topic_source'] = "voice"
     elif msg.document or msg.photo:
-        if 'files' not in context.user_data['order']:
-            context.user_data['order']['files'] = []
-
+        o.setdefault('files', [])
         fid = msg.document.file_id if msg.document else msg.photo[-1].file_id
-        context.user_data['order']['files'].append(fid)
-        context.user_data['order']['topic'] = context.user_data['order'].get('topic', "📎 Файлы/Материалы")
-        context.user_data['order']['topic_source'] = "files"
-
-        # Just ack and wait for more or move on? Let's move on for simplicity or ask "Anything else?"
-        # For this flow, let's assume one batch or single file triggers next step to keep it fast.
-        await msg.reply_text("📎 <b>Файл принят.</b> Подшили к делу.", parse_mode="HTML")
-
-    # 3. Text
+        o['files'].append(fid)
+        o['topic'] = o.get('topic', "📎 Файлы/Материалы")
+        o['topic_source'] = "files"
     elif msg.text:
-        context.user_data['order']['topic'] = msg.text
-        context.user_data['order']['topic_source'] = "text"
+        o['topic'] = msg.text
+        o['topic_source'] = "text"
 
-    # Move to Deadline
     await msg.reply_text(
-        "⏳ <b>ШАГ 3: СРОКИ</b>\nНасколько это срочно?",
-        reply_markup=kb.deadline_kb(),
-        parse_mode="HTML",
+        "👌 Принято! Улики подшиты к делу.\n\nПосмотри на календарь. Насколько сильно горят мосты?",
+        reply_markup=build.deadline_heat_kb(),
     )
     return DEADLINE
 # === 4. ДЕДЛАЙН ===
 async def get_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
+
     if query.data == "back_to_topic":
-        prompt_text = (
-            "🎯 <b>ШАГ 2: ДОСЬЕ И УЛИКИ</b>\n\n"
-            "Чтобы мы попали точно в цель, нам нужна информация.\n"
-            "Не стесняйся, тут все свои.\n\n"
-            "<b>📥 Как можно сдать задачу:</b>\n"
-            "🎤 <b>Голосовое:</b> Просто нажми микрофон и расскажи.\n"
-            "🔄 <b>Пересылка:</b> Перешли сообщение от препода.\n"
-            "📎 <b>Файлы:</b> Кидай методички, планы, фото доски.\n"
-            "✍️ <b>Текст:</b> Напиши тему руками.\n\n"
-            "👇 <i>Жду материалы...</i>"
-        )
         await _safe_edit(
             query,
-            prompt_text,
+            "🎯 ДОСЬЕ НА ЦЕЛЬ\n\nПринимаю данные в любом виде. Не трать время на перепечатку.\n\n📥 Кидай сюда:\n• 🎙 Голосовое (расскажи суть)\n• 📸 Фото (методички, записки)\n• 🔄 Пересланные сообщения\n• 📎 Файлы (Word/PDF)\n\n👇 Жду улики...",
             reply_markup=InlineKeyboardMarkup(
                 [
-                    [InlineKeyboardButton("🤷‍♂️ У меня нет темы (Помогите)", callback_data="topic_help")],
-                    [InlineKeyboardButton("🔙 Назад", callback_data="back_to_type")],
+                    [InlineKeyboardButton("🤷‍♂️ У меня нет темы (Помощь)", callback_data="topic_help")],
+                    [InlineKeyboardButton("🔙 Назад к выбору услуги", callback_data="back_to_services")],
                 ]
             ),
-            parse_mode="HTML",
         )
         return TOPIC
-        
-    is_urgent = (query.data == "time_urgent")
-    context.user_data['order']['is_urgent'] = is_urgent
-    context.user_data['order']['deadline_text'] = "Срочно (1-3 дня)" if is_urgent else "В штатном режиме"
-    
+
+    choice = query.data
+    multiplier = 1.0
+    deadline_label = "🐢 ЗАРАНЕЕ (Неделя+)"
+    if choice == "deadline_hot":
+        multiplier = 1.4
+        deadline_label = "🔥 ОГОНЬ (1-3 дня)"
+    elif choice == "deadline_fast":
+        multiplier = 1.15
+        deadline_label = "⚡️ В ТЕМПЕ (4-7 дней)"
+
+    o = context.user_data['order']
+    o['deadline_text'] = deadline_label
+    o['deadline_multiplier'] = multiplier
+
     # Инициализация допов
     context.user_data['order']['upsells'] = {'speech': False, 'pres': False, 'vip': False}
-    
+
     await _update_upsell_message(query, context)
     return UPSELL
 
 # === 5. UPSELL (ДОПЫ) ===
 async def _update_upsell_message(query, context):
     ups = context.user_data['order']['upsells']
-    
-    # Цены допов (можно вынести в конфиг)
-    P_SPEECH = 1500
-    P_PRES = 2000
-    P_VIP = 2500
-    
-    await _safe_edit(
-        query,
-        "➕ <b>ШАГ 4: ДОПОЛНИТЕЛЬНО</b>\nНужно что-то еще?",
-        reply_markup=kb.upsell_kb(ups['speech'], ups['pres'], ups['vip'], P_SPEECH, P_PRES, P_VIP),
-        parse_mode="HTML"
+    base = context.user_data['order']['base_price']
+    multiplier = context.user_data['order'].get('deadline_multiplier', 1.0)
+
+    extras = 0
+    extras += 2500 if ups.get('vip') else 0
+    extras += 1500 if ups.get('speech') else 0
+    extras += 2000 if ups.get('pres') else 0
+
+    subtotal = int(base * multiplier)
+    current_total = subtotal + extras
+
+    txt = (
+        f"🧳 СБОРКА ИНВЕНТАРЯ\n\n"
+        f"Базовая цена: {base} ₽\n"
+        f"Срочность: {multiplier}x\n\n"
+        f"💰 ТЕКУЩАЯ СУММА: {current_total} ₽\n\n"
+        f"👇 Добавь патронов:"
     )
+
+    await _safe_edit(query, txt, reply_markup=build.upsell_toggle_kb(ups))
 
 async def get_upsell(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
-    
+
     if data == "back_to_deadline":
-        await _safe_edit(query, "⏳ Выберите срочность:", reply_markup=kb.deadline_kb())
+        await _safe_edit(query, "Посмотри на календарь. Насколько сильно горят мосты?", reply_markup=build.deadline_heat_kb())
         return DEADLINE
-        
-    if data == "upsell_done":
-        return await calculate_final(query, context)
-        
-    # Переключатели
+
     ups = context.user_data['order']['upsells']
-    if data == "toggle_speech": ups['speech'] = not ups['speech']
-    elif data == "toggle_pres": ups['pres'] = not ups['pres']
-    elif data == "toggle_vip": ups['vip'] = not ups['vip']
-    
+    if data == "upsell_done":
+        return await _prepare_payment_step(query, context)
+    elif data == "upsell_toggle_vip":
+        ups['vip'] = not ups.get('vip', False)
+    elif data == "upsell_toggle_speech":
+        ups['speech'] = not ups.get('speech', False)
+    elif data == "upsell_toggle_pres":
+        ups['pres'] = not ups.get('pres', False)
+
     await _update_upsell_message(query, context)
     return UPSELL
 
 # === 6. РАСЧЕТ И ОПЛАТА ===
-async def calculate_final(query, context):
+async def _prepare_payment_step(query, context):
     o = context.user_data['order']
-    
-    # Расчет цены
-    price = o['base_price']
-    if o['is_urgent']: price = int(price * URGENCY_MULTIPLIER)
-    
+    base = o['base_price']
+    multiplier = o.get('deadline_multiplier', 1.0)
+    ups = o.get('upsells', {})
+
     extras = 0
-    if o['upsells']['speech']: extras += 1500
-    if o['upsells']['pres']: extras += 2000
-    if o['upsells']['vip']: extras += 2500
-    
-    total = price + extras
+    extras += 2500 if ups.get('vip') else 0
+    extras += 1500 if ups.get('speech') else 0
+    extras += 2000 if ups.get('pres') else 0
+
+    subtotal = int(base * multiplier)
+    total = subtotal + extras
     o['price_calculated'] = total
     o['final_price'] = total
     o['points_used'] = 0
-    
-    # Проверка баллов
+
     user_db = await db.get_user(query.from_user.id)
-    balance = user_db.get('balance', 0)
-    
-    # Логика: можно оплатить до 50% баллами
+    balance = int(user_db.get('balance', 0))
     max_discount = int(total * 0.5)
-    can_use = min(balance, max_discount)
-    
-    context.user_data['order']['can_use_points'] = can_use
-    
-    if can_use > 0:
-        await _safe_edit(
-            query,
-            f"💰 <b>К ОПЛАТЕ: {total} ₽</b>\n\n"
-            f"У вас есть <b>{balance}</b> баллов.\n"
-            f"Можно списать: <b>{can_use}</b> баллов.\n\n"
-            f"Использовать их?",
-            reply_markup=kb.points_choice_kb(can_use),
-            parse_mode="HTML"
-        )
-        return PAY_CHOICE
-    else:
-        # Сразу к подтверждению
-        return await show_confirm(query, context)
+
+    o['can_use_points'] = min(balance, max_discount)
+    o['balance'] = balance
+    o['max_discount'] = max_discount
+
+    text = (
+        f"💳 КАССА\n\n"
+        f"К оплате: {total} ₽\n"
+        f"Твой баланс: 💎 {balance}\n"
+        f"Можно списать до: 💎 {max_discount}\n\n"
+        f"Сколько спишем?"
+    )
+
+    await _safe_edit(query, text, reply_markup=build.payment_smart_kb(balance, max_discount))
+    context.user_data['awaiting_custom_points'] = False
+    return PAY_CHOICE
 
 async def handle_payment_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
     o = context.user_data['order']
-    if query.data == "use_points_yes":
-        points = o['can_use_points']
-        o['points_used'] = points
-        o['final_price'] = o['price_calculated'] - points
-    
-    return await show_confirm(query, context)
 
-async def show_confirm(query, context):
+    if update.callback_query:
+        query = update.callback_query
+        await query.answer()
+        data = query.data
+
+        if data == "pay_custom":
+            context.user_data['awaiting_custom_points'] = True
+            await _safe_edit(query, "Введи сумму списания (не больше 50% и не больше баланса):")
+            return PAY_CHOICE
+        elif data == "pay_skip":
+            o['points_used'] = 0
+        elif data == "pay_all":
+            o['points_used'] = min(o.get('balance', 0), o.get('max_discount', 0))
+        elif data.startswith("pay_minus_"):
+            step = int(data.split("_")[-1])
+            o['points_used'] = min(step, o.get('balance', 0), o.get('max_discount', 0))
+
+        o['final_price'] = o['price_calculated'] - o.get('points_used', 0)
+        return await confirm_order_view(query, context)
+
+    msg = update.message
+    if context.user_data.get('awaiting_custom_points') and msg and msg.text:
+        try:
+            value = int(msg.text.strip())
+        except ValueError:
+            await msg.reply_text("Введите число в рублях/баллах.")
+            return PAY_CHOICE
+
+        max_allowed = min(o.get('balance', 0), o.get('max_discount', 0))
+        if value < 0 or value > max_allowed:
+            await msg.reply_text(f"Нельзя списать больше {max_allowed} или меньше 0. Попробуй снова.")
+            return PAY_CHOICE
+
+        o['points_used'] = value
+        o['final_price'] = o['price_calculated'] - value
+        context.user_data['awaiting_custom_points'] = False
+        await msg.reply_text("Списываем 💎 и готовим чек...")
+        return await confirm_order_view(msg, context)
+
+    await msg.reply_text("Выберите вариант на клавиатуре.")
+    return PAY_CHOICE
+
+async def confirm_order_view(trigger, context):
     o = context.user_data['order']
-    
+
     ups_text = []
-    if o['upsells']['speech']: ups_text.append("Речь")
-    if o['upsells']['pres']: ups_text.append("Презентация")
-    if o['upsells']['vip']: ups_text.append("VIP")
+    if o['upsells'].get('vip'): ups_text.append("VIP")
+    if o['upsells'].get('speech'): ups_text.append("Речь")
+    if o['upsells'].get('pres'): ups_text.append("Презентация")
     ups_str = ", ".join(ups_text) if ups_text else "Нет"
-    
-    txt = (
-        f"🧾 <b>ИТОГОВАЯ СМЕТА</b>\n"
-        f"━━━━━━━━━━━━━━━━\n"
-        f"📚 Услуга: {o['service_name']}\n"
-        f"⏳ Срок: {o['deadline_text']}\n"
-        f"➕ Допы: {ups_str}\n"
-        f"📝 Тема: {o['topic'][:50]}...\n"
-        f"━━━━━━━━━━━━━━━━\n"
-        f"💵 Цена: {o['price_calculated']} ₽\n"
-        f"💎 Списание баллов: -{o['points_used']}\n"
-        f"💰 <b>ИТОГО: {o['final_price']} ₽</b>\n\n"
-        f"🚀 <i>Подтвердите заказ, чтобы отправить его менеджеру.</i>"
-    )
-    
-    await _safe_edit(query, txt, reply_markup=kb.confirm_kb(), parse_mode="HTML")
-    return CONFIRM
 
+    topic_preview = o.get('topic', '—')
+    if len(topic_preview) > 50:
+        topic_preview = topic_preview[:50] + "..."
+
+    txt = "\n".join(
+        [
+            f"🧾 <b>КВИТАНЦИЯ #DRAFT-{trigger.from_user.id}</b>",
+            "<pre>",
+            f"УСЛУГА:.......{o['service_name']}",
+            f"СРОЧНОСТЬ:....{o['deadline_text']}",
+            f"ДОПЫ:.........{ups_str}",
+            "------------------------------",
+            f"ПОДЫТОГ:......{o['price_calculated']} ₽",
+            f"СКИДКА:.......-{o.get('points_used', 0)} ₽",
+            "==============================",
+            f"ИТОГО:        {o['price_calculated'] - o.get('points_used', 0)} ₽",
+            "</pre>",
+            "⚠️ <i>Нажимая кнопку, вы заключаете джентльменское соглашение.</i>",
+        ]
+    )
+    markup = InlineKeyboardMarkup([[InlineKeyboardButton("✍️ ПОДПИСАТЬ КОНТРАКТ", callback_data="submit_order")]])
+    if hasattr(trigger, "callback_query") or hasattr(trigger, "edit_message_text"):
+        await _safe_edit(trigger, txt, reply_markup=markup, parse_mode="HTML")
+    else:
+        await trigger.reply_text(txt, reply_markup=markup, parse_mode="HTML")
+    return CONFIRM
 # === 7. ФИНАЛИЗАЦИЯ ===
 async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -369,12 +386,21 @@ async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try: await context.bot.send_message(admin_id, admin_txt, parse_mode="HTML")
         except: pass
 
-    await _safe_edit(
-        query,
-        f"✅ <b>ЗАКАЗ #{oid} ПРИНЯТ!</b>\n\nМенеджер уже изучает детали. Ожидайте сообщения.",
-        reply_markup=kb.main_kb(user.id),
-        parse_mode="HTML"
+    final_text = (
+        "🤝 Сделка скреплена!\n\n"
+        f"Заказ #{oid} лежит на столе у менеджера. В течение 15 минут он постучится к тебе в личку.\n\n"
+        "Пока ждешь, можешь расслабиться:"
     )
+
+    final_kb = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("🎰 Испытать удачу", callback_data="daily_bonus")],
+            [InlineKeyboardButton("💬 Чат заказа", callback_data=f"chat_order_{oid}")],
+            [InlineKeyboardButton("🏠 В главное меню", callback_data="home")],
+        ]
+    )
+
+    await _safe_edit(query, final_text, reply_markup=final_kb)
     return ConversationHandler.END
 
 # === КОНСУЛЬТАЦИЯ ===
