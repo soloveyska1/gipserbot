@@ -89,7 +89,7 @@ def main():
             order_flow.TOPIC: [
                 MessageHandler(filters.ALL & ~filters.COMMAND, order_flow.get_topic),
                 CallbackQueryHandler(order_flow.start_order, pattern="^back_to_type$"),
-                CallbackQueryHandler(order_flow.get_topic, pattern="^no_topic$")
+                CallbackQueryHandler(order_flow.get_topic, pattern="^topic_help$")
             ],
             order_flow.DEADLINE: [CallbackQueryHandler(order_flow.get_deadline, pattern="^time_|^back_to_topic$")],
             order_flow.UPSELL: [CallbackQueryHandler(order_flow.get_upsell, pattern="^toggle_|^upsell_done$|^back_to_deadline$")],
@@ -133,6 +133,8 @@ def main():
     app.add_handler(CallbackQueryHandler(client.my_order, pattern="^my_order_"))
     app.add_handler(CallbackQueryHandler(client.hide_order_confirm, pattern="^hide_order_"))
     app.add_handler(CallbackQueryHandler(client.send_safe_file, pattern="^get_file_msg_"))
+    app.add_handler(CallbackQueryHandler(admin.admin_play_voice, pattern="^adm_voice_"))
+    app.add_handler(CallbackQueryHandler(admin.admin_get_files, pattern="^adm_files_"))
 
     # === ОТЗЫВЫ ===
     review_conv = ConversationHandler(

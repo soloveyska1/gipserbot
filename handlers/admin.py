@@ -1,5 +1,6 @@
 import asyncio
 import io
+import json
 from datetime import datetime, timedelta
 
 import matplotlib
@@ -562,86 +563,48 @@ async def show_orders(update: Update, context: ContextTypes.DEFAULT_TYPE, page: 
 
 
 async def show_order(update: Update, context: ContextTypes.DEFAULT_TYPE, order_id: int | None = None):
-    if not _is_admin(update.effective_user.id):
-        return
+    if not _is_admin(update.effective_user.id): return
     query = update.callback_query
-    if query:
-        await query.answer()
-    oid = order_id if order_id is not None else (_parse_order_callback(update).id if _parse_order_callback(update) else None)
-    if oid is None:
-        return
-    order = await db.get_order(oid)
-    status_label = {
-        "checking": "🟡 На проверке",
-        "pending_pay": "💳 Ждёт оплаты",
-        "paid": "💸 Оплачено",
-        "work": "⚙️ В работе",
-        "norm_control": "🧭 Нормоконтроль",
-        "edits": "✏️ Правки",
-        "suspended": "⏸ Приостановлен",
-        "done": "✅ Выполнен",
-        "cancel": "❌ Отменён",
-    }
+    if query: await query.answer()
 
-    user = await db.get_user(order['user_id'])
-    full_name = user.get("full_name", "Клиент") if user else "Клиент"
-    username = user.get("username") if user else None
-    badges = []
-    total_spent = user.get("total_spent", 0) if user else 0
-    if total_spent > 20000:
-        badges.append("🐳")
-    elif total_spent == 0:
-        badges.append("🆕")
-    badge_str = " ".join(badges)
+    oid = order_id if order_id else int(query.data.split("_")[-1])
+    order = await db.get_order(oid) # Ensure this fetches 'voice_id' and 'files' columns!
 
-    status_emoji = status_label.get(order['status'], "❓")
-    clean_service = (order.get("service_type") or "Услуга").split("(")[0].strip()
-    topic_preview = html.escape(order.get("topic") or "—")
-    if len(topic_preview) > 120:
-        topic_preview = topic_preview[:120] + "…"
+    # Visual Formatting
+    status_emoji = {"checking": "🟡", "pending_pay": "💳", "work": "⚙️", "done": "✅", "cancel": "❌"}.get(order['status'], "❓")
+    user_link = f"<a href='tg://user?id={order['user_id']}'>{order['user_id']}</a>"
 
-    files_list = order.get("files") or []
-    files_count = len(files_list)
-    source_map = {
-        "help_needed": "Кнопка 'Нет темы'",
-        "voice": "Голосовое",
-        "files": "Вложения",
-        "text": "Текст",
-    }
-    source_tag = source_map.get(order.get("topic_source"), "—")
+    # Content Preview
+    content_preview = order['topic']
+    if len(content_preview) > 100:
+        content_preview = content_preview[:100] + "..."
 
-    price_value = order.get("final_price", order.get("price", 0))
-    price_text = f"{price_value:,}".replace(",", " ")
-
-    user_link = f"<a href='tg://user?id={order['user_id']}'>{html.escape(full_name)}</a>"
-    if username:
-        user_link += f" (@{username})"
-    if badge_str:
-        user_link += f" {badge_str}"
+    # Extras
+    files_count = len(json.loads(order.get('files', '[]'))) if order.get('files') else 0
+    voice_marker = "🎙 <b>Есть ГС</b>" if order.get('voice_id') else "Без ГС"
+    source_tag = order.get('source') or order.get('topic_source', 'organic')
 
     txt = (
-        f"📦 <b>ЗАКАЗ #{oid}</b> | {status_emoji}\n"
-        f"👤 {user_link}\n"
-        f"📚 <b>Услуга:</b> {clean_service}\n"
+        f"📦 <b>ЗАКАЗ #{oid}</b> | {status_emoji} {order.get('status')}\n"
+        f"👤 Юзер: {user_link}\n"
         f"➖➖➖➖➖➖➖➖➖➖\n"
-        f"📝 <b>Вводные данные:</b>\n"
-        f"{topic_preview}\n"
-        f"<i>(Например: \"Курсовая по праву...\" или \"🎤 Голосовое\")</i>\n\n"
-        f"📎 <b>Вложения:</b> {files_count} шт.\n"
+        f"📝 <b>Суть задачи:</b>\n<i>{content_preview}</i>\n\n"
+        f"📎 <b>Вложения:</b> {files_count} шт. | {voice_marker}\n"
         f"🎯 <b>Источник:</b> {source_tag}\n"
-        f"💰 <b>Предв. цена:</b> {price_text} ₽\n"
-        f"➖➖➖➖➖➖➖➖➖➖"
-    )
-    await _safe_edit(
-        query,
-        txt,
-        reply_markup=admin_kb.order_actions(
-            oid, order['status'], order['user_id'], bool(order.get("voice_id")), files_count
-        ),
-        parse_mode="HTML",
+        f"💰 <b>Сумма:</b> {order.get('final_price', 0)} ₽\n"
+        f"➖➖➖➖➖➖➖➖➖➖\n"
     )
 
+    # Use the NEW keyboard with media buttons
+    kb = admin_kb.order_actions(
+        oid,
+        order['status'],
+        order['user_id'],
+        has_voice=bool(order.get('voice_id')),
+        has_files=(files_count > 0),
+    )
 
+    await _safe_edit(query, txt, reply_markup=kb, parse_mode="HTML")
 async def admin_play_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_admin(update.effective_user.id):
         return
@@ -680,8 +643,15 @@ async def admin_get_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("Нет вложений", show_alert=True)
         return
 
-    photos = [f for f in files_list if f.get("type") == "photo"]
-    documents = [f for f in files_list if f.get("type") == "document"]
+    normalized = []
+    for item in files_list:
+        if isinstance(item, dict):
+            normalized.append(item)
+        else:
+            normalized.append({"file_id": str(item), "type": "document"})
+
+    photos = [f for f in normalized if f.get("type") == "photo"]
+    documents = [f for f in normalized if f.get("type") == "document"]
 
     # Telegram ограничивает группы до 10 элементов
     def _chunk(seq, size=10):

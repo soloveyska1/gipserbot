@@ -79,15 +79,18 @@ async def get_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return SERVICE_CARD
 
 async def confirm_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Step 2 Prompt: Omni-Input Interface"""
     query = update.callback_query
     await query.answer()
-    
+
+    # Reset order data if retrying
     if "srv_back" in query.data:
         return await start_order(update, context)
-        
-    prompt_text = (
+
+    # THE NEW TEXT LAYOUT
+    txt = (
         "🎯 <b>ШАГ 2: ДОСЬЕ И УЛИКИ</b>\n\n"
-        "Чтобы мы попали точно в цель, нам нужна информация.\n"
+        "Чтобы мы попали точно в цель, нам нужна информация. "
         "Не стесняйся, тут все свои.\n\n"
         "<b>📥 Как можно сдать задачу:</b>\n"
         "🎤 <b>Голосовое:</b> Просто нажми микрофон и расскажи.\n"
@@ -97,78 +100,70 @@ async def confirm_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👇 <i>Жду материалы...</i>"
     )
 
-    markup = InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton("🤷‍♂️ У меня нет темы (Помогите)", callback_data="no_topic")],
-            [InlineKeyboardButton("🔙 Назад", callback_data="back_to_type")],
-        ]
-    )
+    # KEYBOARD WITH HELP BUTTON
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🤷‍♂️ У меня нет темы (Помогите)", callback_data="topic_help")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="back_to_type")]
+    ])
 
-    await _safe_edit(
-        query,
-        prompt_text,
-        reply_markup=markup,
-        parse_mode="HTML"
-    )
+    await _safe_edit(query, txt, reply_markup=kb, parse_mode="HTML")
     return TOPIC
 
 # === 3. ТЕМА И ФАЙЛЫ ===
 async def get_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    order = context.user_data.setdefault('order', {})
-    files = order.setdefault('files', [])
+    """Handler for Step 2: Saves Voice, Files, or Text"""
+    # Handle "No Topic" button
+    if update.callback_query and update.callback_query.data == "topic_help":
+        await update.callback_query.answer()
+        context.user_data['order']['topic'] = "⚠️ ТЕМА НЕ УКАЗАНА (Клиент просит помощи)"
+        context.user_data['order']['source'] = "help_needed"
+        context.user_data['order']['topic_source'] = "help_needed"
+        await _safe_edit(
+            update.callback_query,
+            "👌 <b>Принято.</b> Разберемся вместе.\n\n⏳ <b>ШАГ 3: СРОКИ</b>",
+            reply_markup=kb.deadline_kb(),
+            parse_mode="HTML",
+        )
+        return DEADLINE
 
-    if update.callback_query:
-        query = update.callback_query
-        await query.answer()
-        if query.data == "no_topic":
-            order['topic'] = "⚠️ Клиент просит подобрать тему"
-            order['topic_source'] = "help_needed"
-            order['voice_id'] = order.get('voice_id', '')
-            await _safe_edit(query, "Принято! Улики подшиты к делу.", parse_mode="HTML")
-            await query.message.reply_text(
-                "⏳ <b>ШАГ 3: СРОКИ</b>\nНасколько это срочно?",
-                reply_markup=kb.deadline_kb(),
-                parse_mode="HTML"
-            )
-            return DEADLINE
+    # Handle Message Input
+    msg = update.message
+    context.user_data['order']['source'] = "organic"
+    context.user_data['order']['topic_source'] = "text"
 
-    message = update.message
-    if not message:
-        return TOPIC
+    # 1. Voice
+    if msg.voice:
+        context.user_data['order']['voice_id'] = msg.voice.file_id
+        context.user_data['order']['topic'] = "🎤 Голосовое сообщение"
+        context.user_data['order']['topic_source'] = "voice"
+        await msg.reply_text("🎙 <b>Голосовое принято.</b> Шериф послушает.", parse_mode="HTML")
 
-    topic_source = "text"
-    topic_value = message.caption or message.text or ""
+    # 2. Document/Photo
+    elif msg.document or msg.photo:
+        if 'files' not in context.user_data['order']:
+            context.user_data['order']['files'] = []
 
-    if message.voice:
-        order['voice_id'] = message.voice.file_id
-        topic_value = "🎤 Голосовое сообщение"
-        topic_source = "voice"
-    elif message.document:
-        files.append({"file_id": message.document.file_id, "type": "document"})
-        topic_value = "📎 Файлы/Скриншоты"
-        topic_source = "files"
-    elif message.photo:
-        photo = message.photo[-1]
-        files.append({"file_id": photo.file_id, "type": "photo"})
-        topic_value = "📎 Файлы/Скриншоты"
-        topic_source = "files"
-    elif message.text:
-        topic_source = "text"
+        fid = msg.document.file_id if msg.document else msg.photo[-1].file_id
+        context.user_data['order']['files'].append(fid)
+        context.user_data['order']['topic'] = context.user_data['order'].get('topic', "📎 Файлы/Материалы")
+        context.user_data['order']['topic_source'] = "files"
 
-    order['topic'] = topic_value or "—"
-    order['topic_source'] = topic_source
+        # Just ack and wait for more or move on? Let's move on for simplicity or ask "Anything else?"
+        # For this flow, let's assume one batch or single file triggers next step to keep it fast.
+        await msg.reply_text("📎 <b>Файл принят.</b> Подшили к делу.", parse_mode="HTML")
 
-    await message.reply_text(
-        "Принято! Улики подшиты к делу.",
-        parse_mode="HTML",
-    )
-    await message.reply_text(
+    # 3. Text
+    elif msg.text:
+        context.user_data['order']['topic'] = msg.text
+        context.user_data['order']['topic_source'] = "text"
+
+    # Move to Deadline
+    await msg.reply_text(
         "⏳ <b>ШАГ 3: СРОКИ</b>\nНасколько это срочно?",
         reply_markup=kb.deadline_kb(),
-        parse_mode="HTML"
+        parse_mode="HTML",
     )
     return DEADLINE
-
 # === 4. ДЕДЛАЙН ===
 async def get_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -191,7 +186,7 @@ async def get_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE):
             prompt_text,
             reply_markup=InlineKeyboardMarkup(
                 [
-                    [InlineKeyboardButton("🤷‍♂️ У меня нет темы (Помогите)", callback_data="no_topic")],
+                    [InlineKeyboardButton("🤷‍♂️ У меня нет темы (Помогите)", callback_data="topic_help")],
                     [InlineKeyboardButton("🔙 Назад", callback_data="back_to_type")],
                 ]
             ),
