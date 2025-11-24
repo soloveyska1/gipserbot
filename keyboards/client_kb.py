@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from config import ADMIN_IDS
 
@@ -62,10 +64,35 @@ def points_choice_kb(points: int):
     )
 
 
-def profile_kb():
+def _format_cooldown(seconds: int | float) -> str:
+    if not seconds or seconds < 0:
+        return "0ч 0м"
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    return f"{hours}ч {minutes}м"
+
+
+def profile_kb(bonus_status: dict | None = None):
+    btn_text = "🎰 Испытать удачу"
+    if bonus_status:
+        if bonus_status.get("available"):
+            day = bonus_status.get("next_streak") or 1
+            if day <= 0:
+                day = 1
+            btn_text = f"🎰 Испытать удачу (День {day})"
+        else:
+            cooldown = _format_cooldown(bonus_status.get("cooldown_seconds", 0))
+            btn_text = f"⏳ Таймер: {cooldown}"
+
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("📦 Мои заказы", callback_data="my_history")],
+            [InlineKeyboardButton(btn_text, callback_data="daily_bonus")],
+            [
+                InlineKeyboardButton("🤜 Дуэль (100💎)", callback_data="duel_start"),
+                InlineKeyboardButton("🔮 Оракул дедлайнов", callback_data="deadline_oracle"),
+            ],
+            [InlineKeyboardButton("🗄 Мой Сейф", callback_data="my_safe")],
             [InlineKeyboardButton("📜 История золота", callback_data="my_transactions")],
             [InlineKeyboardButton("🎟 Ввести промокод", callback_data="enter_promo")],
             [InlineKeyboardButton("💰 Партнерка (15%)", callback_data="partners")],
@@ -85,10 +112,58 @@ def history_kb(orders):
 
 
 def order_details_kb(oid, status="review"):
+    rows = [[InlineKeyboardButton("💬 ЧАТ С МЕНЕДЖЕРОМ", callback_data=f"chat_order_{oid}")]]
+
+    if status in {"done", "cancel", "completed"}:
+        rows.append([InlineKeyboardButton("🗑 Убрать из истории", callback_data=f"hide_order_{oid}")])
+
+    rows.append([InlineKeyboardButton("🔙 Назад", callback_data="my_history")])
+
+    return InlineKeyboardMarkup(rows)
+
+
+def _format_safe_date(date_value):
+    if not date_value:
+        return "—"
+    try:
+        return datetime.fromisoformat(str(date_value)).strftime("%d.%m")
+    except Exception:
+        return str(date_value)[:10]
+
+
+def safe_kb(files):
+    rows = []
+    for f in files:
+        date_label = _format_safe_date(f.get("created_at"))
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    f"📄 {f.get('service_type', 'Услуга')} | {date_label}",
+                    callback_data=f"get_file_msg_{f.get('id')}",
+                )
+            ]
+        )
+
+    rows.append([InlineKeyboardButton("🔙 Назад", callback_data="profile")])
+    return InlineKeyboardMarkup(rows)
+
+
+def duel_kb():
     return InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton("💬 ЧАТ С МЕНЕДЖЕРОМ", callback_data=f"chat_order_{oid}")],
-            [InlineKeyboardButton("🔙 Назад", callback_data="my_history")],
+            [InlineKeyboardButton("🔫 Колт", callback_data="duel_pick_colt")],
+            [InlineKeyboardButton("🧨 Динамит", callback_data="duel_pick_dynamite")],
+            [InlineKeyboardButton("➰ Лассо", callback_data="duel_pick_lasso")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="open_profile")],
+        ]
+    )
+
+
+def oracle_kb():
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("🚀 Запустить заказ", callback_data="order_start")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="open_profile")],
         ]
     )
 

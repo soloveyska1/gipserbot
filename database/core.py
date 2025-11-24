@@ -1,5 +1,7 @@
 import sqlite3
 import logging
+import json
+from datetime import datetime, timedelta
 from config import DB_PATH
 
 ALLOWED_STATUSES = {
@@ -56,6 +58,8 @@ def _ensure_user_columns(cursor):
     _ensure_column(cursor, "users", "referrer_id", "referrer_id INTEGER DEFAULT 0")
     _ensure_column(cursor, "users", "is_alive", "is_alive INTEGER DEFAULT 1")
     _ensure_column(cursor, "users", "agreed_to_rules", "agreed_to_rules INTEGER DEFAULT 0")
+    _ensure_column(cursor, "users", "last_bonus_time", "last_bonus_time TIMESTAMP")
+    _ensure_column(cursor, "users", "bonus_streak", "bonus_streak INTEGER DEFAULT 0")
     if not _column_exists(cursor, "users", "joined_at"):
         # SQLite не позволяет добавлять колонку с выражением по умолчанию через ALTER,
         # поэтому добавляем без дефолта и заполняем существующие записи вручную.
@@ -80,6 +84,8 @@ def _ensure_order_columns(cursor):
         "points_used",
         "final_price",
         "files",
+        "voice_id",
+        "topic_source",
         "speech",
         "pres",
         "vip",
@@ -96,6 +102,8 @@ def _ensure_order_columns(cursor):
                 user_id INTEGER,
                 service_type TEXT,
                 topic TEXT,
+                topic_source TEXT,
+                voice_id TEXT,
                 deadline TEXT,
                 status TEXT DEFAULT 'checking',
                 price INTEGER DEFAULT 0,
@@ -130,19 +138,21 @@ def _ensure_order_columns(cursor):
 
         select_exprs = [
             col_or_default("id", "NULL"),
-                col_or_default("user_id", "0"),
-                col_or_default("service_type", "''", fallback="order_type"),
-                col_or_default("topic", "''"),
-                col_or_default("deadline", "''"),
-                col_or_default("status", "'checking'"),
-                col_or_default("price", "0"),
-                col_or_default("original_price", "price"),
-                col_or_default("points_used", "0"),
-                col_or_default("final_price", "price"),
-                col_or_default("files", "''"),
-                col_or_default("speech", "0"),
-                col_or_default("pres", "0"),
-                col_or_default("vip", "0"),
+            col_or_default("user_id", "0"),
+            col_or_default("service_type", "''", fallback="order_type"),
+            col_or_default("topic", "''"),
+            col_or_default("topic_source", "''"),
+            col_or_default("voice_id", "''"),
+            col_or_default("deadline", "''"),
+            col_or_default("status", "'checking'"),
+            col_or_default("price", "0"),
+            col_or_default("original_price", "price"),
+            col_or_default("points_used", "0"),
+            col_or_default("final_price", "price"),
+            col_or_default("files", "''"),
+            col_or_default("speech", "0"),
+            col_or_default("pres", "0"),
+            col_or_default("vip", "0"),
             col_or_default("is_visible", "1"),
             col_or_default("created_at", "CURRENT_TIMESTAMP"),
             col_or_default("is_hidden_for_user", "0"),
@@ -191,6 +201,15 @@ def _ensure_order_columns(cursor):
     _ensure_column(cursor, "orders", "original_price", "original_price INTEGER DEFAULT 0")
     _ensure_column(cursor, "orders", "points_used", "points_used INTEGER DEFAULT 0")
     _ensure_column(cursor, "orders", "final_price", "final_price INTEGER DEFAULT 0")
+    _ensure_column(cursor, "orders", "voice_id", "voice_id TEXT")
+    _ensure_column(cursor, "orders", "topic_source", "topic_source TEXT")
+    _ensure_column(cursor, "users", "achievements", "achievements TEXT DEFAULT ''")
+    _ensure_column(cursor, "users", "last_seen", "last_seen TIMESTAMP")
+
+
+def _ensure_action_log_columns(cursor):
+    _ensure_column(cursor, "action_logs", "event_type", "event_type TEXT")
+    _ensure_column(cursor, "action_logs", "meta", "meta TEXT")
 
 
 def init_db():
@@ -211,6 +230,8 @@ def init_db():
                 referrer_id INTEGER DEFAULT 0,
                 is_alive INTEGER DEFAULT 1,
                 agreed_to_rules INTEGER DEFAULT 0,
+                last_bonus_time TIMESTAMP,
+                bonus_streak INTEGER DEFAULT 0,
                 joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """
@@ -315,6 +336,8 @@ def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER,
                 action_text TEXT,
+                event_type TEXT,
+                meta TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """
@@ -322,6 +345,7 @@ def init_db():
 
         _ensure_user_columns(cursor)
         _ensure_order_columns(cursor)
+        _ensure_action_log_columns(cursor)
 
         cursor.execute(
             "INSERT OR IGNORE INTO settings (key, value) VALUES ('maintenance_mode', '0')"
@@ -355,19 +379,39 @@ async def create_order(data):
     try:
         cursor = conn.execute(
             """
-            INSERT INTO orders (user_id, service_type, topic, deadline_type, price, original_price, points_used, final_price, files, speech, pres, vip, status, deadline, promo_code)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 'checking', ?, ?)
+            INSERT INTO orders (
+                user_id,
+                service_type,
+                topic,
+                topic_source,
+                voice_id,
+                deadline_type,
+                price,
+                original_price,
+                points_used,
+                final_price,
+                files,
+                speech,
+                pres,
+                vip,
+                status,
+                deadline,
+                promo_code
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 'checking', ?, ?)
             """,
             (
                 data['uid'],
                 data['type'],
                 data['topic'],
-                data['deadline'],
+                data.get('topic_source', ''),
+                data.get('voice_id', ''),
+                data.get('deadline'),
                 data['final_price'],
                 data.get('original_price', data['final_price']),
                 data.get('points_used', 0),
                 data.get('final_price', data['final_price']),
-                "",
+                json.dumps(data.get('files', [])),
                 data.get('deadline'),
                 data.get('promo_code'),
             ),
@@ -414,7 +458,9 @@ async def get_user(user_id):
                    COALESCE(referrer_id, 0) as referrer_id,
                    COALESCE(is_alive, 1) as is_alive,
                    COALESCE(agreed_to_rules, 0) as agreed_to_rules,
-                   joined_at
+                   joined_at,
+                   last_bonus_time,
+                   COALESCE(bonus_streak, 0) as bonus_streak
             FROM users WHERE user_id = ?
             """,
             (user_id,),
@@ -433,8 +479,76 @@ async def get_user(user_id):
                 "is_alive": row[8],
                 "agreed_to_rules": row[9],
                 "joined_at": row[10],
+                "last_bonus_time": row[11],
+                "bonus_streak": row[12],
             }
         return None
+    finally:
+        conn.close()
+
+
+def _parse_ts(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value))
+    except Exception:
+        try:
+            return datetime.strptime(str(value), "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return None
+
+
+async def check_bonus_status(user_id):
+    conn = await get_connection()
+    try:
+        cursor = conn.cursor()
+        _ensure_user_columns(cursor)
+        conn.commit()
+
+        cursor = conn.execute(
+            "SELECT last_bonus_time, COALESCE(bonus_streak, 0) FROM users WHERE user_id = ?",
+            (user_id,),
+        )
+        row = cursor.fetchone()
+        last_bonus_raw = row[0] if row else None
+        streak = row[1] if row else 0
+
+        last_bonus = _parse_ts(last_bonus_raw)
+        now = datetime.utcnow()
+
+        if not last_bonus:
+            return {"available": True, "next_streak": max(1, streak or 1), "cooldown_seconds": 0}
+
+        elapsed = now - last_bonus
+
+        if elapsed < timedelta(hours=24):
+            remaining = timedelta(hours=24) - elapsed
+            return {
+                "available": False,
+                "next_streak": streak,
+                "cooldown_seconds": int(remaining.total_seconds()),
+            }
+
+        if elapsed <= timedelta(hours=48):
+            return {"available": True, "next_streak": streak + 1, "cooldown_seconds": 0}
+
+        # Больше 48 часов — сброс серии
+        conn.execute("UPDATE users SET bonus_streak = 0 WHERE user_id = ?", (user_id,))
+        conn.commit()
+        return {"available": True, "next_streak": 0, "cooldown_seconds": 0}
+    finally:
+        conn.close()
+
+
+async def record_bonus_claim(user_id, streak):
+    conn = await get_connection()
+    try:
+        conn.execute(
+            "UPDATE users SET last_bonus_time = CURRENT_TIMESTAMP, bonus_streak = ? WHERE user_id = ?",
+            (streak, user_id),
+        )
+        conn.commit()
     finally:
         conn.close()
 
@@ -487,7 +601,7 @@ async def get_order(order_id):
     try:
         cursor = conn.execute(
             """
-            SELECT id, user_id, service_type, topic, deadline, status, price, files, speech, pres, vip, is_visible,
+            SELECT id, user_id, service_type, topic, topic_source, voice_id, deadline, status, price, files, speech, pres, vip, is_visible,
                    COALESCE(is_hidden_for_user, 0), created_at, deadline_type, COALESCE(upsell, 0),
                    COALESCE(referral_bonus_paid, 0), promo_code, last_ping_time,
                    COALESCE(original_price, price), COALESCE(points_used, 0), COALESCE(final_price, price)
@@ -497,29 +611,35 @@ async def get_order(order_id):
         )
         row = cursor.fetchone()
         if row:
+            try:
+                files = json.loads(row[9] or "[]")
+            except Exception:
+                files = []
             return {
                 "id": row[0],
                 "user_id": row[1],
                 "service_type": row[2],
                 "topic": row[3],
-                "deadline": row[4],
-                "status": row[5],
-                "price": row[6],
-                "files": row[7],
-                "speech": row[8],
-                "pres": row[9],
-                "vip": row[10],
-                "is_visible": row[11],
-                "is_hidden_for_user": row[12],
-                "created_at": row[13],
-                "deadline_type": row[14],
-                "upsell": row[15],
-                "referral_bonus_paid": row[16],
-                "promo_code": row[17],
-                "last_ping_time": row[18],
-                "original_price": row[19],
-                "points_used": row[20],
-                "final_price": row[21],
+                "topic_source": row[4],
+                "voice_id": row[5],
+                "deadline": row[6],
+                "status": row[7],
+                "price": row[8],
+                "files": files,
+                "speech": row[10],
+                "pres": row[11],
+                "vip": row[12],
+                "is_visible": row[13],
+                "is_hidden_for_user": row[14],
+                "created_at": row[15],
+                "deadline_type": row[16],
+                "upsell": row[17],
+                "referral_bonus_paid": row[18],
+                "promo_code": row[19],
+                "last_ping_time": row[20],
+                "original_price": row[21],
+                "points_used": row[22],
+                "final_price": row[23],
             }
         return None
     finally:
@@ -531,7 +651,7 @@ async def get_user_orders(user_id):
     try:
         cursor = conn.execute(
             """
-            SELECT id, user_id, service_type, topic, deadline, status, price, files, speech, pres, vip, is_visible,
+            SELECT id, user_id, service_type, topic, topic_source, voice_id, deadline, status, price, files, speech, pres, vip, is_visible,
                    COALESCE(is_hidden_for_user, 0), created_at, deadline_type, COALESCE(upsell, 0),
                    COALESCE(referral_bonus_paid, 0), promo_code, last_ping_time,
                    COALESCE(original_price, price), COALESCE(points_used, 0), COALESCE(final_price, price)
@@ -543,14 +663,21 @@ async def get_user_orders(user_id):
         )
         orders = []
         for row in cursor.fetchall():
+            try:
+                files = json.loads(row[9] or "[]")
+            except Exception:
+                files = []
             orders.append(
                 {
                     "id": row[0],
-                    "status": row[5],
-                    "price": row[6],
+                    "status": row[7],
+                    "price": row[8],
                     "service_type": row[2],
                     "topic": row[3],
-                    "deadline": row[4],
+                    "topic_source": row[4],
+                    "voice_id": row[5],
+                    "deadline": row[6],
+                    "files": files,
                     "promo_code": row[17],
                     "original_price": row[19],
                     "points_used": row[20],
@@ -562,17 +689,46 @@ async def get_user_orders(user_id):
         conn.close()
 
 
-async def get_all_orders(limit=100):
+async def get_all_orders(limit=100, status_filter=None, search_query=None):
     conn = await get_connection()
     try:
-        cursor = conn.execute(
+        base_query = [
             """
-            SELECT id, user_id, service_type, topic, deadline, status, price, promo_code,
-                   COALESCE(original_price, price), COALESCE(points_used, 0), COALESCE(final_price, price)
-            FROM orders WHERE status != 'done' ORDER BY id DESC LIMIT ?
-            """,
-            (limit,),
-        )
+            SELECT o.id, o.user_id, o.service_type, o.topic, o.deadline, o.status, o.price, o.promo_code,
+                   COALESCE(o.original_price, o.price), COALESCE(o.points_used, 0), COALESCE(o.final_price, o.price),
+                   u.username, u.full_name
+            FROM orders o
+            LEFT JOIN users u ON u.user_id = o.user_id
+            """
+        ]
+
+        conditions = []
+        params = []
+
+        if status_filter == "active":
+            conditions.append("o.status IN ('work', 'checking', 'norm_control', 'edits')")
+        elif status_filter == "payment":
+            conditions.append("o.status IN ('pending_pay')")
+        elif status_filter == "new":
+            conditions.append("o.status IN ('new', 'checking')")
+
+        if search_query is not None:
+            search_query = search_query.strip()
+            if search_query.isdigit():
+                conditions.append("o.id = ?")
+                params.append(int(search_query))
+            elif search_query:
+                like_pattern = f"%{search_query}%"
+                conditions.append("(u.username LIKE ? OR u.full_name LIKE ?)")
+                params.extend([like_pattern, like_pattern])
+
+        if conditions:
+            base_query.append("WHERE " + " AND ".join(conditions))
+
+        base_query.append("ORDER BY o.id DESC LIMIT ?")
+        params.append(limit)
+
+        cursor = conn.execute(" ".join(base_query), tuple(params))
         orders = []
         for row in cursor.fetchall():
             orders.append(
@@ -583,10 +739,13 @@ async def get_all_orders(limit=100):
                     "price": row[6],
                     "service_type": row[2],
                     "topic": row[3],
+                    "deadline": row[4],
                     "promo_code": row[7],
                     "original_price": row[8],
                     "points_used": row[9],
                     "final_price": row[10],
+                    "username": row[11],
+                    "full_name": row[12],
                 }
             )
         return orders
@@ -618,6 +777,16 @@ async def hide_order_for_user(order_id, hide=True):
     conn = await get_connection()
     try:
         conn.execute("UPDATE orders SET is_hidden_for_user = ? WHERE id = ?", (1 if hide else 0, order_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+async def delete_order_permanently(order_id: int):
+    conn = await get_connection()
+    try:
+        conn.execute("DELETE FROM messages WHERE order_id = ?", (order_id,))
+        conn.execute("DELETE FROM orders WHERE id = ?", (order_id,))
         conn.commit()
     finally:
         conn.close()
@@ -700,6 +869,63 @@ async def add_chat_message(order_id, sender_id, is_admin, msg_type, content, fil
         conn.close()
 
 
+async def get_user_files(user_id):
+    conn = await get_connection()
+    try:
+        cursor = conn.execute(
+            """
+            SELECT m.id, m.file_id, m.msg_type, m.created_at, o.topic, o.service_type
+            FROM messages m
+            JOIN orders o ON m.order_id = o.id
+            WHERE o.user_id = ?
+              AND m.is_admin = 1
+              AND m.file_id IS NOT NULL
+              AND m.msg_type IN ('document', 'photo')
+            ORDER BY m.created_at DESC
+            """,
+            (user_id,),
+        )
+        files = []
+        for row in cursor.fetchall():
+            files.append(
+                {
+                    "id": row[0],
+                    "file_id": row[1],
+                    "msg_type": row[2],
+                    "created_at": row[3],
+                    "topic": row[4],
+                    "service_type": row[5],
+                }
+            )
+        return files
+    finally:
+        conn.close()
+
+
+async def get_file_message(message_id, user_id):
+    conn = await get_connection()
+    try:
+        cursor = conn.execute(
+            """
+            SELECT m.file_id, m.msg_type
+            FROM messages m
+            JOIN orders o ON m.order_id = o.id
+            WHERE m.id = ?
+              AND o.user_id = ?
+              AND m.is_admin = 1
+              AND m.file_id IS NOT NULL
+              AND m.msg_type IN ('document', 'photo')
+            """,
+            (message_id, user_id),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return {"file_id": row[0], "msg_type": row[1]}
+    finally:
+        conn.close()
+
+
 async def get_chat_history(order_id, limit=None):
     conn = await get_connection()
     try:
@@ -762,10 +988,13 @@ async def add_transaction(user_id, amount, reason):
         conn.close()
 
 
-async def add_action_log(user_id, action_text):
+async def add_action_log(user_id, action_text, event_type: str | None = None, meta: str | None = None):
     conn = await get_connection()
     try:
-        conn.execute("INSERT INTO action_logs (user_id, action_text) VALUES (?, ?)", (user_id, action_text))
+        conn.execute(
+            "INSERT INTO action_logs (user_id, action_text, event_type, meta) VALUES (?, ?, ?, ?)",
+            (user_id, action_text, event_type, meta),
+        )
         conn.commit()
     finally:
         conn.close()
@@ -775,10 +1004,182 @@ async def get_action_logs(limit=100):
     conn = await get_connection()
     try:
         cursor = conn.execute(
-            "SELECT user_id, action_text, created_at FROM action_logs ORDER BY id DESC LIMIT ?",
+            "SELECT user_id, action_text, event_type, meta, created_at FROM action_logs ORDER BY id DESC LIMIT ?",
             (limit,),
         )
         return cursor.fetchall()
+    finally:
+        conn.close()
+
+
+async def get_user_behavior_snapshot(user_id: int) -> dict:
+    conn = await get_connection()
+    try:
+        user_row = conn.execute(
+            "SELECT total_spent, orders_count, bonus_streak FROM users WHERE user_id = ?",
+            (user_id,),
+        ).fetchone() or (0, 0, 0)
+
+        total_spent, orders_count, bonus_streak = user_row
+
+        total_actions = conn.execute(
+            "SELECT COUNT(*) FROM action_logs WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()[0]
+
+        price_clicks = conn.execute(
+            "SELECT COUNT(*) FROM action_logs WHERE user_id = ? AND (event_type = 'price_list' OR action_text LIKE 'event:price_list%')",
+            (user_id,),
+        ).fetchone()[0]
+
+        night_actions = conn.execute(
+            """
+            SELECT COUNT(*) FROM action_logs
+            WHERE user_id = ? AND CAST(STRFTIME('%H', created_at) AS INTEGER) BETWEEN 0 AND 5
+            """,
+            (user_id,),
+        ).fetchone()[0]
+
+        return {
+            "total_spent": total_spent or 0,
+            "orders_count": orders_count or 0,
+            "bonus_streak": bonus_streak or 0,
+            "total_actions": total_actions or 0,
+            "price_clicks": price_clicks or 0,
+            "night_actions": night_actions or 0,
+        }
+    finally:
+        conn.close()
+
+
+async def get_revenue_timeseries(days: int = 30) -> dict:
+    conn = await get_connection()
+    try:
+        since_date = (datetime.utcnow() - timedelta(days=days - 1)).date()
+        rows = conn.execute(
+            """
+            SELECT DATE(created_at) as d, SUM(COALESCE(final_price, price))
+            FROM orders
+            WHERE status != 'cancel' AND created_at IS NOT NULL AND DATE(created_at) >= DATE(?)
+            GROUP BY DATE(created_at)
+            ORDER BY DATE(created_at)
+            """,
+            (since_date,),
+        ).fetchall()
+        return {row[0]: row[1] or 0 for row in rows}
+    finally:
+        conn.close()
+
+
+async def get_service_distribution() -> dict:
+    conn = await get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT COALESCE(service_type, 'Не указано'), COUNT(*)
+            FROM orders
+            WHERE status != 'cancel'
+            GROUP BY COALESCE(service_type, 'Не указано')
+            ORDER BY COUNT(*) DESC
+            """,
+        ).fetchall()
+        return {row[0]: row[1] for row in rows}
+    finally:
+        conn.close()
+
+
+async def get_funnel_counts(days: int = 30) -> dict:
+    conn = await get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT event_type, COUNT(*)
+            FROM action_logs
+            WHERE created_at >= datetime('now', ?)
+              AND event_type IN ('start','price_list','consult','order_submit')
+            GROUP BY event_type
+            """,
+            (f"-{days} day",),
+        ).fetchall()
+        counts = {"start": 0, "price_list": 0, "consult": 0, "order_submit": 0}
+        for row in rows:
+            counts[row[0]] = row[1]
+        return counts
+    finally:
+        conn.close()
+
+
+async def get_live_pulse_metrics() -> dict:
+    conn = await get_connection()
+    try:
+        revenue_today = (
+            conn.execute(
+                "SELECT SUM(COALESCE(final_price, price)) FROM orders WHERE status != 'cancel' AND DATE(created_at) = DATE('now')"
+            ).fetchone()[0]
+            or 0
+        )
+
+        avg_revenue_rows = conn.execute(
+            """
+            SELECT DATE(created_at) d, SUM(COALESCE(final_price, price))
+            FROM orders WHERE status != 'cancel' AND created_at IS NOT NULL
+            GROUP BY DATE(created_at) ORDER BY DATE(created_at) DESC LIMIT 7
+            """
+        ).fetchall()
+        avg_revenue = 0
+        if avg_revenue_rows:
+            totals = [r[1] or 0 for r in avg_revenue_rows if r[1] is not None]
+            avg_revenue = sum(totals) / max(1, len(totals))
+
+        active_users_1h = conn.execute(
+            "SELECT COUNT(DISTINCT user_id) FROM action_logs WHERE created_at >= datetime('now','-1 hour')",
+        ).fetchone()[0]
+
+        pending_orders = conn.execute(
+            "SELECT COUNT(*) FROM orders WHERE status NOT IN ('done','cancel')",
+        ).fetchone()[0]
+
+        urgent_rows = conn.execute(
+            "SELECT deadline, status FROM orders WHERE status NOT IN ('done','cancel') AND deadline IS NOT NULL",
+        ).fetchall()
+        urgent_count = 0
+        now_date = datetime.utcnow().date()
+        for deadline, status in urgent_rows:
+            if not deadline:
+                continue
+            if isinstance(deadline, str) and ("urgent" in deadline.lower() or "сроч" in deadline.lower()):
+                urgent_count += 1
+                continue
+            try:
+                parsed = datetime.strptime(deadline, "%d.%m.%Y").date()
+                if (parsed - now_date).days <= 3:
+                    urgent_count += 1
+            except Exception:
+                continue
+
+        orders_today = conn.execute(
+            "SELECT COUNT(*) FROM orders WHERE DATE(created_at) = DATE('now')",
+        ).fetchone()[0]
+        leads_today = conn.execute(
+            "SELECT COUNT(*) FROM action_logs WHERE event_type = 'start' AND DATE(created_at) = DATE('now')",
+        ).fetchone()[0]
+        conversion = 0
+        if leads_today:
+            conversion = round((orders_today / leads_today) * 100, 2)
+
+        error_count = conn.execute(
+            "SELECT COUNT(*) FROM action_logs WHERE event_type = 'error' AND DATE(created_at) = DATE('now')",
+        ).fetchone()[0]
+
+        return {
+            "revenue_today": revenue_today,
+            "avg_revenue": avg_revenue,
+            "active_users_1h": active_users_1h or 0,
+            "pending_orders": pending_orders or 0,
+            "urgent_count": urgent_count,
+            "conversion": conversion,
+            "errors": error_count or 0,
+        }
     finally:
         conn.close()
 
@@ -838,5 +1239,40 @@ async def get_stats():
         o_count = conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
         money = conn.execute("SELECT SUM(price) FROM orders WHERE status != 'cancel'").fetchone()[0] or 0
         return u_count, o_count, money
+    finally:
+        conn.close()
+
+
+async def get_daily_analytics(days: int = 30):
+    conn = await get_connection()
+    try:
+        since_date = (datetime.utcnow() - timedelta(days=days - 1)).date()
+
+        users_rows = conn.execute(
+            """
+            SELECT DATE(joined_at) as d, COUNT(*)
+            FROM users
+            WHERE joined_at IS NOT NULL AND DATE(joined_at) >= DATE(?)
+            GROUP BY DATE(joined_at)
+            ORDER BY DATE(joined_at)
+            """,
+            (since_date,),
+        ).fetchall()
+
+        revenue_rows = conn.execute(
+            """
+            SELECT DATE(created_at) as d, SUM(COALESCE(final_price, price))
+            FROM orders
+            WHERE status != 'cancel' AND created_at IS NOT NULL AND DATE(created_at) >= DATE(?)
+            GROUP BY DATE(created_at)
+            ORDER BY DATE(created_at)
+            """,
+            (since_date,),
+        ).fetchall()
+
+        return {
+            "users": {row[0]: row[1] for row in users_rows},
+            "revenue": {row[0]: row[1] or 0 for row in revenue_rows},
+        }
     finally:
         conn.close()

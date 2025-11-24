@@ -88,6 +88,8 @@ def main_menu():
             [InlineKeyboardButton("⚙️ Прайс", callback_data="admin_prices")],
             [InlineKeyboardButton("📢 Рассылка", callback_data="admin_broadcast")],
             [InlineKeyboardButton("👀 Статистика", callback_data=StatsCallback(action="view").pack())],
+            [InlineKeyboardButton("📈 Графики", callback_data="admin_charts")],
+            [InlineKeyboardButton("📊 Полный отчет", callback_data="admin_full_report")],
         ]
     )
 
@@ -121,11 +123,26 @@ def service_actions_kb(service_id: int):
     )
 
 
-def orders_list(orders, page: int = 0):
+def orders_list(orders, page: int = 0, current_filter: str = "all"):
     kb = []
     start = page * 5
     end = start + 5
     current = orders[start:end]
+
+    def _tab(label: str, key: str) -> InlineKeyboardButton:
+        is_active = current_filter == key
+        text = f"[✅ {label}]" if is_active else label
+        cb = f"ord:filter:{key}" if key != "search" else "ord:search"
+        return InlineKeyboardButton(text, callback_data=cb)
+
+    kb.append(
+        [
+            _tab("📁 Все", "all"),
+            _tab("⚡️ Актив", "active"),
+            _tab("💰 Оплата", "payment"),
+            _tab("🔍 Поиск", "search"),
+        ]
+    )
 
     status_emoji = {
         "checking": "🟡",
@@ -140,10 +157,12 @@ def orders_list(orders, page: int = 0):
     }
 
     for o in current:
+        raw_type = o.get("service_type", "Заказ")
+        clean_type = raw_type.split("(")[0].strip()
         kb.append(
             [
                 InlineKeyboardButton(
-                    f"{status_emoji.get(o['status'], '?')} #{o['id']} | {o.get('final_price', o['price'])}₽",
+                    f"{status_emoji.get(o['status'], '?')} #{o['id']} | {clean_type}",
                     callback_data=OrderCallback(action="view", id=o["id"]).pack(),
                 )
             ]
@@ -169,65 +188,36 @@ def orders_list(orders, page: int = 0):
     return InlineKeyboardMarkup(kb)
 
 
-def order_actions(oid: int, status: str, user_id: int | None = None):
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    "💬 Чат заказа",
-                    callback_data=OrderCallback(action="chat", id=oid).pack(),
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "⚙️ В работу", callback_data=OrderCallback(action="status", id=oid, payload="work").pack()
-                ),
-                InlineKeyboardButton(
-                    "✅ Выполнен",
-                    callback_data=OrderCallback(action="status", id=oid, payload="done").pack(),
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    "💳 Ждёт оплаты",
-                    callback_data=OrderCallback(action="status", id=oid, payload="pending_pay").pack(),
-                ),
-                InlineKeyboardButton(
-                    "💸 Оплачен",
-                    callback_data=OrderCallback(action="status", id=oid, payload="paid").pack(),
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    "❌ Отменить",
-                    callback_data=OrderCallback(action="status", id=oid, payload="cancel").pack(),
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    "🧭 Нормконтроль",
-                    callback_data=OrderCallback(action="status", id=oid, payload="norm_control").pack(),
-                ),
-                InlineKeyboardButton(
-                    "✏️ Правки",
-                    callback_data=OrderCallback(action="status", id=oid, payload="edits").pack(),
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    "⏸ Приостановить",
-                    callback_data=OrderCallback(action="status", id=oid, payload="suspended").pack(),
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "👤 Профиль",
-                    callback_data=OrderCallback(action="user", id=user_id or 0, payload=str(oid)).pack(),
-                )
-            ],
-            [InlineKeyboardButton("⬅️ Назад к списку", callback_data=OrderCallback(action="list", id=0).pack())],
-        ]
-    )
+def order_actions(oid: int, status: str, user_id: int | None = None, has_voice=False, has_files=False):
+    # Standard buttons
+    rows = []
+
+    # MEDIA ROW (Only if exists)
+    media_row = []
+    if has_voice:
+        media_row.append(InlineKeyboardButton("▶️ ГС", callback_data=f"adm_voice_{oid}"))
+    if has_files:
+        media_row.append(InlineKeyboardButton("📂 Файлы", callback_data=f"adm_files_{oid}"))
+    if media_row:
+        rows.append(media_row)
+
+    # Chat & Status
+    rows.append([InlineKeyboardButton("💬 Чат заказа", callback_data=OrderCallback(action="chat", id=oid).pack())])
+
+    # Status Controls
+    rows.append([
+        InlineKeyboardButton("⚙️ В работу", callback_data=OrderCallback(action="status", id=oid, payload="work").pack()),
+        InlineKeyboardButton("✅ Выполнен", callback_data=OrderCallback(action="status", id=oid, payload="done").pack()),
+    ])
+    rows.append([
+        InlineKeyboardButton("💳 Ждёт $", callback_data=OrderCallback(action="status", id=oid, payload="pending_pay").pack()),
+        InlineKeyboardButton("❌ Отмена", callback_data=OrderCallback(action="status", id=oid, payload="cancel").pack()),
+    ])
+
+    rows.append([InlineKeyboardButton("💀 УДАЛИТЬ", callback_data=OrderCallback(action="hard_delete", id=oid).pack())])
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=OrderCallback(action="list", id=0).pack())])
+
+    return InlineKeyboardMarkup(rows)
 
 
 def prices_menu(prices: dict):

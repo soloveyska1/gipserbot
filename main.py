@@ -3,7 +3,17 @@ import os
 import sys
 from pathlib import Path
 
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ConversationHandler
+from telegram import Update
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ConversationHandler,
+    JobQueue,
+    MessageHandler,
+    TypeHandler,
+    filters,
+)
 
 # Настройка путей
 BASE_DIR = Path(__file__).resolve().parent
@@ -20,6 +30,8 @@ from database.core import init_db
 from database import db as catalog_db
 from handlers import client, order_flow, chat, admin, promos
 from handlers.error_handler import error_handler
+from services.dashboard import LiveDashboard
+import utils
 
 # Логи
 if not os.path.exists(LOGS_DIR):
@@ -36,7 +48,21 @@ def main():
     catalog_db.seed_services()
     
     print("🚀 Запуск бота...")
-    app = Application.builder().token(BOT_TOKEN).build()
+    job_queue = None
+    try:
+        job_queue = JobQueue()
+    except RuntimeError as exc:
+        logging.warning("JobQueue unavailable: %s", exc)
+    builder = Application.builder().token(BOT_TOKEN)
+    if job_queue:
+        builder = builder.job_queue(job_queue)
+    app = builder.build()
+
+    # --- OBSERVABILITY: глобальный проводник ---
+    app.add_handler(TypeHandler(Update, utils.wiretap_logger, block=False), group=-1)
+
+    # --- LIVE DASHBOARD ---
+    LiveDashboard().attach(app)
 
     # === АДМИНКА ===
     admin.setup(app)
@@ -55,19 +81,17 @@ def main():
             order_flow.TYPE: [
                 CallbackQueryHandler(order_flow.get_type, pattern="^srv_"),
                 CallbackQueryHandler(order_flow.get_type, pattern="^consultation_request$"),
-                CallbackQueryHandler(order_flow.get_type, pattern="^order_consult$")
-            ],
-            order_flow.SERVICE_CARD: [
-                CallbackQueryHandler(order_flow.confirm_service, pattern="^srv_confirm_|^srv_back$|back_to_type")
             ],
             order_flow.TOPIC: [
-                MessageHandler(filters.Document.ALL | filters.PHOTO | filters.TEXT & ~filters.COMMAND, order_flow.get_topic),
-                CallbackQueryHandler(order_flow.start_order, pattern="^back_to_type$")
+                MessageHandler(filters.ALL & ~filters.COMMAND, order_flow.get_topic),
+                CallbackQueryHandler(order_flow.get_topic, pattern="^topic_help$"),
+                CallbackQueryHandler(order_flow.start_order, pattern="^srv_back$"),
             ],
-            order_flow.DEADLINE: [CallbackQueryHandler(order_flow.get_deadline, pattern="^time_|^back_to_topic$")],
-            order_flow.UPSELL: [CallbackQueryHandler(order_flow.get_upsell, pattern="^toggle_|^upsell_done$|^back_to_deadline$")],
-            order_flow.PAY_CHOICE: [CallbackQueryHandler(order_flow.handle_payment_choice, pattern="^use_points_yes$|^use_points_no$")],
-            order_flow.CONFIRM: [CallbackQueryHandler(order_flow.confirm_order, pattern="^submit_order$|^home$")],
+            order_flow.DEADLINE: [CallbackQueryHandler(order_flow.get_deadline, pattern="^(time_|back_to_topic)")],
+            order_flow.UPSELL: [CallbackQueryHandler(order_flow.get_upsell, pattern="^(toggle_|upsell_done)")],
+            order_flow.PAY_CHOICE: [CallbackQueryHandler(order_flow.handle_payment_choice, pattern="^pay_")],
+            order_flow.PAY_CUSTOM: [MessageHandler(filters.TEXT & ~filters.COMMAND, order_flow.custom_points_input)],
+            order_flow.CONFIRM: [CallbackQueryHandler(order_flow.confirm_order, pattern="^(submit_order|order_start)$")],
             order_flow.CONSULT: [
                 CallbackQueryHandler(order_flow.cancel_consultation, pattern="^consult_cancel$"),
                 MessageHandler(
@@ -89,6 +113,10 @@ def main():
     app.add_handler(CallbackQueryHandler(client.accept_rules, pattern="^rules_accept$"))
     app.add_handler(CallbackQueryHandler(client.profile, pattern="^profile$"))
     app.add_handler(CallbackQueryHandler(client.profile, pattern="^open_profile$"))
+    app.add_handler(CallbackQueryHandler(client.play_daily_bonus, pattern="^daily_bonus$"))
+    app.add_handler(CallbackQueryHandler(client.start_duel, pattern="^duel_start$"))
+    app.add_handler(CallbackQueryHandler(client.resolve_duel, pattern="^duel_pick_"))
+    app.add_handler(CallbackQueryHandler(client.draw_deadline_oracle, pattern="^deadline_oracle$"))
     app.add_handler(CallbackQueryHandler(client.show_price_list, pattern="^price_list$"))
     app.add_handler(CallbackQueryHandler(client.back_to_main_menu, pattern="^back_to_main_menu$"))
     app.add_handler(CallbackQueryHandler(client.show_price_card, pattern="^price_srv_"))
@@ -97,8 +125,13 @@ def main():
     app.add_handler(MessageHandler(filters.Regex(r"^⚖️ Кодекс Чести \(Гарантии\)$"), client.show_code_of_honor))
     app.add_handler(CallbackQueryHandler(client.partners, pattern="^partners$"))
     app.add_handler(CallbackQueryHandler(client.my_history, pattern="^my_history$"))
+    app.add_handler(CallbackQueryHandler(client.open_safe, pattern="^my_safe$"))
     app.add_handler(CallbackQueryHandler(client.my_transactions, pattern="^my_transactions$"))
     app.add_handler(CallbackQueryHandler(client.my_order, pattern="^my_order_"))
+    app.add_handler(CallbackQueryHandler(client.hide_order_confirm, pattern="^hide_order_"))
+    app.add_handler(CallbackQueryHandler(client.send_safe_file, pattern="^get_file_msg_"))
+    app.add_handler(CallbackQueryHandler(admin.admin_play_voice, pattern="^adm_voice_"))
+    app.add_handler(CallbackQueryHandler(admin.admin_get_files, pattern="^adm_files_"))
 
     # === ОТЗЫВЫ ===
     review_conv = ConversationHandler(

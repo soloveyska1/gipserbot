@@ -1,14 +1,25 @@
 import asyncio
+import io
+import json
+from datetime import datetime, timedelta
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InputMediaPhoto, InputMediaDocument
 from telegram.error import BadRequest, Forbidden
 from telegram.ext import ContextTypes, ConversationHandler, MessageHandler, CallbackQueryHandler, CommandHandler, filters
 
 from config import ADMIN_IDS
+import html
 from database import core as db
 from database import db as crm_db
 from keyboards import admin_kb
+from services import analytics
 from keyboards.admin_kb import OrderCallback, StatsCallback, UserCallback
+import utils
 
 PRICE_STATE = 1
 BALANCE_STATE = 2
@@ -25,6 +36,7 @@ SERVICE_ADD_DESC_STATE = 12
 SERVICE_EDIT_NAME_STATE = 13
 SERVICE_EDIT_PRICE_STATE = 14
 SERVICE_EDIT_DESC_STATE = 15
+ADMIN_SEARCH_STATE = 16
 ALLOWED_STATUSES = {
     "checking",
     "pending_pay",
@@ -40,6 +52,38 @@ ALLOWED_STATUSES = {
 
 def _is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
+
+
+async def watch_user_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update.effective_user.id):
+        return
+
+    args = context.args if hasattr(context, "args") else None
+    if not update.message:
+        return
+    if not args:
+        await update.message.reply_text("Использование: /watch <user_id> или /watch stop [user_id]")
+        return
+
+    command = args[0].lower()
+    admin_id = update.effective_user.id
+
+    if command in {"stop", "off"}:
+        target = int(args[1]) if len(args) > 1 and args[1].isdigit() else None
+        utils.remove_watch(admin_id, target)
+        msg = "👁 Наблюдение остановлено." if target is None else f"👁 Наблюдение за {target} остановлено."
+        await update.message.reply_text(msg)
+        return
+
+    if not command.isdigit():
+        await update.message.reply_text("Укажи ID пользователя цифрами.")
+        return
+
+    target_id = int(command)
+    utils.add_watch(admin_id, target_id)
+    await update.message.reply_text(
+        f"🔎 Подслушиваем #USER_{target_id}. Все шаги будут приходить сюда.", parse_mode="HTML"
+    )
 
 
 class _StateWrapper:
@@ -170,6 +214,10 @@ async def show_client_profile(update: Update, context: ContextTypes.DEFAULT_TYPE
     link = f"<a href='tg://user?id={user['user_id']}'>{user.get('full_name') or user['user_id']}</a>"
     rank = _rank_by_spent(user.get("total_spent", 0))
     note = user.get("admin_note") or "—"
+    tags = await utils.get_behavior_tags(target_id)
+    tag_line = " ".join(tags) if tags else "—"
+    badges = await utils.compute_achievements(target_id)
+    badges_line = " ".join(badges) if badges else "—"
     text = (
         f"👤 Пользователь: {link} ({uname})\n"
         f"🆔 ID: {user['user_id']}\n"
@@ -178,6 +226,8 @@ async def show_client_profile(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"💰 Баланс: {user.get('balance', 0)} 💎\n"
         f"📦 Заказы: {user.get('orders_count', 0)} (Сумма: {user.get('total_spent', 0)} ₽)\n"
         f"🏆 Ранг: {rank}\n"
+        f"🏷 Теги: {tag_line}\n"
+        f"🎖 Бейджи: {badges_line}\n"
         f"📝 Заметка: {note}"
     )
 
@@ -404,61 +454,280 @@ async def send_user_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # --- ORDERS ---
-async def show_orders(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int = 0):
+def _deadline_marker(deadline_value: str | None) -> tuple[str, str]:
+    if not deadline_value:
+        return "⚪️", "—"
+    text = str(deadline_value).strip()
+    if text.lower() == "urgent":
+        return "🔴", text
+    try:
+        deadline_dt = datetime.strptime(text, "%d.%m.%Y")
+        today = datetime.utcnow().date()
+        days_left = (deadline_dt.date() - today).days
+        if days_left < 0:
+            return "☠️", text
+        if days_left <= 3:
+            return "🔴", text
+        if days_left <= 7:
+            return "🟡", text
+        return "🟢", text
+    except Exception:
+        return "⚪️", text
+
+
+async def show_orders(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int = 0, orders_override=None, heading: str | None = None):
     if not _is_admin(update.effective_user.id):
         return
     query = update.callback_query
     if query:
         await query.answer()
 
-    orders = await db.get_all_orders(limit=100)
-    text = f"📦 <b>АКТИВНЫЕ ЗАКАЗЫ</b> (стр. {page+1})"
-    if query:
-        await _safe_edit(query, text, reply_markup=admin_kb.orders_list(orders, page), parse_mode="HTML")
+    current_filter = context.user_data.get("admin_filter", "all")
+    context.user_data.setdefault("admin_filter", current_filter)
+    if current_filter not in {"all", "active", "payment", "new", "search"}:
+        current_filter = "all"
+    status_filter = None if current_filter in {"all", "search"} else current_filter
+    search_query = context.user_data.get("admin_search_query") if current_filter == "search" else None
+
+    orders = orders_override
+    if orders is None:
+        orders = await db.get_all_orders(limit=100, status_filter=status_filter, search_query=search_query)
+
+    start = page * 5
+    end = start + 5
+    current_slice = orders[start:end]
+
+    filter_names = {
+        "all": "ВСЕ",
+        "active": "АКТИВНЫЕ",
+        "payment": "ОПЛАТА",
+        "new": "НОВЫЕ",
+        "search": "ПОИСК",
+    }
+    if heading:
+        title = heading
+    elif current_filter == "search" and search_query:
+        title = f"📦 <b>ПОИСК: {search_query}</b> (стр. {page+1})"
     else:
-        await update.message.reply_text(text, reply_markup=admin_kb.orders_list(orders, page), parse_mode="HTML")
+        title = f"📦 <b>ЗАКАЗЫ: {filter_names.get(current_filter, 'ВСЕ')}</b> (стр. {page+1})"
 
-
-async def show_order(update: Update, context: ContextTypes.DEFAULT_TYPE, order_id: int | None = None):
-    if not _is_admin(update.effective_user.id):
-        return
-    query = update.callback_query
-    if query:
-        await query.answer()
-    oid = order_id if order_id is not None else (_parse_order_callback(update).id if _parse_order_callback(update) else None)
-    if oid is None:
-        return
-    order = await db.get_order(oid)
-
-    status_label = {
+    status_map = {
         "checking": "🟡 На проверке",
-        "pending_pay": "💳 Ждёт оплаты",
-        "paid": "💸 Оплачено",
+        "pending_pay": "💳 Ждет оплаты",
+        "paid": "💸 Оплачен",
         "work": "⚙️ В работе",
         "norm_control": "🧭 Нормоконтроль",
         "edits": "✏️ Правки",
-        "suspended": "⏸ Приостановлен",
-        "done": "✅ Выполнен",
-        "cancel": "❌ Отменён",
+        "suspended": "⏸ Пауза",
+        "done": "✅ Готов",
+        "cancel": "❌ Отмена",
     }
 
-    original_price = order.get("original_price", order["price"])
-    points_used = order.get("points_used", 0)
-    final_price = order.get("final_price", order["price"])
+    lines = [title]
+    if not current_slice:
+        lines.append("Пока пусто — попробуйте другой фильтр или поиск.")
+    else:
+        for o in current_slice:
+            raw_type = o.get("service_type", "Заказ")
+            clean_type = raw_type.split("(")[0].strip()
+
+            raw_deadline = o.get("deadline", "Normal") or "Normal"
+            if "urgent" in raw_deadline.lower():
+                deadline_str = "🔴 СРОЧНО"
+            elif "normal" in raw_deadline.lower():
+                deadline_str = "⚪️ Штатно"
+            else:
+                marker, deadline_text = _deadline_marker(raw_deadline)
+                deadline_str = f"{marker} {deadline_text}"
+
+            price_value = o.get("final_price", o.get("price", 0))
+            price = f"{price_value:,}".replace(",", " ")
+
+            user_link = f"<a href='tg://user?id={o['user_id']}'>{o.get('full_name', 'Юзер')}</a>"
+            if o.get("username"):
+                user_link += f" (@{o['username']})"
+
+            lines.append(
+                f"{status_map.get(o['status'], '❓')} <b>#{o['id']} {clean_type}</b>\n"
+                f"👤 {user_link}\n"
+                f"💰 <b>{price} ₽</b> | ⏳ {deadline_str}\n"
+                f"➖➖➖➖➖➖➖➖➖➖"
+            )
+
+    kb = admin_kb.orders_list(orders, page, current_filter=current_filter)
+    rendered_text = "\n".join(lines)
+    if query:
+        await _safe_edit(query, rendered_text, reply_markup=kb, parse_mode="HTML")
+    else:
+        await update.message.reply_text(rendered_text, reply_markup=kb, parse_mode="HTML")
+
+
+async def show_order(update: Update, context: ContextTypes.DEFAULT_TYPE, order_id: int | None = None):
+    if not _is_admin(update.effective_user.id): return
+    query = update.callback_query
+    if query: await query.answer()
+
+    oid = order_id if order_id else int(query.data.split("_")[-1])
+    order = await db.get_order(oid) # Ensure this fetches 'voice_id' and 'files' columns!
+
+    # Visual Formatting
+    status_emoji = {"checking": "🟡", "pending_pay": "💳", "work": "⚙️", "done": "✅", "cancel": "❌"}.get(order['status'], "❓")
     user_link = f"<a href='tg://user?id={order['user_id']}'>{order['user_id']}</a>"
 
+    # Content Preview
+    content_preview = order['topic']
+    if len(content_preview) > 100:
+        content_preview = content_preview[:100] + "..."
+
+    # Extras
+    files_count = len(json.loads(order.get('files', '[]'))) if order.get('files') else 0
+    voice_marker = "🎙 <b>Есть ГС</b>" if order.get('voice_id') else "Без ГС"
+    source_tag = order.get('source') or order.get('topic_source', 'organic')
+
     txt = (
-        f"📦 <b>ЗАКАЗ #{oid}</b>\n"
+        f"📦 <b>ЗАКАЗ #{oid}</b> | {status_emoji} {order.get('status')}\n"
         f"👤 Юзер: {user_link}\n"
-        f"📚 Тип: {order['service_type']}\n"
-        f"📊 Статус: {status_label.get(order['status'], order['status'])}\n"
-        f"📝 Тема: {order['topic']}\n\n"
-        f"💵 <b>Финансы:</b>\n"
-        f"Цена: {original_price} ₽\n"
-        f"Списано баллов: -{points_used} 💎\n"
-        f"<b>ИТОГО К ОПЛАТЕ: {final_price} ₽</b>\n"
+        f"➖➖➖➖➖➖➖➖➖➖\n"
+        f"📝 <b>Суть задачи:</b>\n<i>{content_preview}</i>\n\n"
+        f"📎 <b>Вложения:</b> {files_count} шт. | {voice_marker}\n"
+        f"🎯 <b>Источник:</b> {source_tag}\n"
+        f"💰 <b>Сумма:</b> {order.get('final_price', 0)} ₽\n"
+        f"➖➖➖➖➖➖➖➖➖➖\n"
     )
-    await _safe_edit(query, txt, reply_markup=admin_kb.order_actions(oid, order['status'], order['user_id']), parse_mode="HTML")
+
+    # Use the NEW keyboard with media buttons
+    kb = admin_kb.order_actions(
+        oid,
+        order['status'],
+        order['user_id'],
+        has_voice=bool(order.get('voice_id')),
+        has_files=(files_count > 0),
+    )
+
+    await _safe_edit(query, txt, reply_markup=kb, parse_mode="HTML")
+async def admin_play_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update.effective_user.id):
+        return
+    query = update.callback_query
+    if query:
+        await query.answer()
+    oid = int(query.data.split("_")[-1]) if query and query.data else None
+    if not oid:
+        return
+    order = await db.get_order(oid)
+    voice_id = order.get("voice_id") if order else None
+    if not voice_id:
+        if query:
+            await query.answer("Нет голосовых", show_alert=True)
+        return
+    try:
+        await context.bot.send_voice(update.effective_user.id, voice_id, caption=f"ГС клиента по заказу #{oid}")
+    except Exception:
+        if query:
+            await query.answer("Не удалось отправить голосовое", show_alert=True)
+
+
+async def admin_get_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update.effective_user.id):
+        return
+    query = update.callback_query
+    if query:
+        await query.answer()
+    oid = int(query.data.split("_")[-1]) if query and query.data else None
+    if not oid:
+        return
+    order = await db.get_order(oid)
+    files_list = order.get("files") if order else []
+    if not files_list:
+        if query:
+            await query.answer("Нет вложений", show_alert=True)
+        return
+
+    normalized = []
+    for item in files_list:
+        if isinstance(item, dict):
+            normalized.append(item)
+        else:
+            normalized.append({"file_id": str(item), "type": "document"})
+
+    photos = [f for f in normalized if f.get("type") == "photo"]
+    documents = [f for f in normalized if f.get("type") == "document"]
+
+    # Telegram ограничивает группы до 10 элементов
+    def _chunk(seq, size=10):
+        for i in range(0, len(seq), size):
+            yield seq[i:i+size]
+
+    for chunk in _chunk(photos):
+        if len(chunk) == 1:
+            try:
+                await context.bot.send_photo(update.effective_user.id, chunk[0]["file_id"])
+            except Exception:
+                pass
+            continue
+        media = [InputMediaPhoto(m["file_id"]) for m in chunk]
+        try:
+            await context.bot.send_media_group(update.effective_user.id, media)
+        except Exception:
+            pass
+
+    for chunk in _chunk(documents):
+        if len(chunk) == 1:
+            try:
+                await context.bot.send_document(update.effective_user.id, chunk[0]["file_id"])
+            except Exception:
+                pass
+            continue
+        media = [InputMediaDocument(m["file_id"]) for m in chunk]
+        try:
+            await context.bot.send_media_group(update.effective_user.id, media)
+        except Exception:
+            pass
+
+    if query:
+        await query.answer("Вложения отправлены")
+
+
+async def handle_order_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update.effective_user.id):
+        return ConversationHandler.END
+    query = update.callback_query
+    if not query:
+        return ConversationHandler.END
+    if query.data:
+        filter_key = query.data.split(":")[-1]
+        context.user_data["admin_filter"] = filter_key
+        if filter_key != "search":
+            context.user_data.pop("admin_search_query", None)
+    await show_orders(update, context, page=0)
+    return ConversationHandler.END
+
+
+async def start_order_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update.effective_user.id):
+        return ConversationHandler.END
+    query = update.callback_query
+    if query:
+        await query.answer()
+    context.user_data["admin_filter"] = "search"
+    context.user_data["admin_search_query"] = ""
+    kb = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("⬅️ Назад", callback_data="ord:filter:all")]]
+    )
+    await _safe_edit(query, "🔍 Введите номер заказа или никнейм клиента:", reply_markup=kb)
+    return ADMIN_SEARCH_STATE
+
+
+async def process_order_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update.effective_user.id):
+        return ConversationHandler.END
+    query_text = (update.message.text or "").strip()
+    orders = await db.get_all_orders(limit=100, search_query=query_text)
+    context.user_data["admin_filter"] = "search"
+    context.user_data["admin_search_query"] = query_text
+    heading = f"📦 <b>ПОИСК: {query_text or '—'}</b>"
+    await show_orders(update, context, page=0, orders_override=orders, heading=heading)
+    return ConversationHandler.END
 
 
 async def show_user_profile(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, from_order: int | None = None):
@@ -942,6 +1211,90 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(text, reply_markup=markup, parse_mode="HTML")
 
 
+async def send_charts(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update.effective_user.id):
+        return
+    query = update.callback_query
+    if query:
+        await query.answer("Строим графики...")
+
+    metrics = await db.get_daily_analytics(30)
+    start_day = datetime.utcnow().date() - timedelta(days=29)
+
+    labels = []
+    users_points = []
+    revenue_points = []
+    for i in range(30):
+        day = start_day + timedelta(days=i)
+        key = day.isoformat()
+        labels.append(day.strftime("%d.%m"))
+        users_points.append(metrics.get("users", {}).get(key, 0))
+        revenue_points.append(metrics.get("revenue", {}).get(key, 0))
+
+    fig, ax1 = plt.subplots(figsize=(10, 5))
+    ax2 = ax1.twinx()
+
+    ax1.bar(labels, users_points, color="#5DADE2", label="Новые пользователи")
+    ax2.plot(labels, revenue_points, color="#E67E22", label="Оборот", linewidth=2)
+
+    ax1.set_ylabel("Новые пользователи")
+    ax2.set_ylabel("Оборот, ₽")
+    ax1.set_xlabel("Дни")
+    ax1.set_xticklabels(labels, rotation=45, ha="right")
+    ax1.legend(loc="upper left")
+    ax2.legend(loc="upper right")
+    ax1.grid(True, linestyle="--", alpha=0.3)
+
+    buf = io.BytesIO()
+    plt.tight_layout()
+    plt.savefig(buf, format="png", bbox_inches="tight")
+    buf.seek(0)
+    plt.close(fig)
+
+    target_chat = query.message.chat_id if query and query.message else update.effective_chat.id
+    await context.bot.send_photo(chat_id=target_chat, photo=buf, caption="📈 Метрики за последние 30 дней")
+
+    if query:
+        await _safe_edit(query, "📈 Графики готовы. Смотри вложение.", reply_markup=admin_kb.main_menu())
+    else:
+        await update.message.reply_text("📈 Графики готовы. Смотри вложение.", reply_markup=admin_kb.main_menu())
+
+
+async def send_full_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update.effective_user.id):
+        return
+    query = update.callback_query
+    if query:
+        await query.answer("Формируем дашборд...", show_alert=False)
+
+    revenue_img = await analytics.generate_revenue_chart()
+    pie_img = await analytics.generate_services_pie_chart()
+    funnel_img = await analytics.generate_funnel_chart()
+    metrics = await db.get_live_pulse_metrics()
+
+    caption = (
+        "📊 <b>ПОЛНЫЙ ОТЧЁТ</b>\n"
+        f"💰 Сегодня: {int(metrics.get('revenue_today', 0))} ₽ | Среднее: {int(metrics.get('avg_revenue', 0))} ₽\n"
+        f"👥 Активны (1ч): {metrics.get('active_users_1h', 0)} | Pending: {metrics.get('pending_orders', 0)}\n"
+        f"⚠️ Срочных: {metrics.get('urgent_count', 0)} | Ошибок: {metrics.get('errors', 0)}\n"
+        f"📉 Конверсия: {metrics.get('conversion', 0)}%"
+    )
+
+    media = [
+        InputMediaPhoto(revenue_img, caption=caption, parse_mode="HTML"),
+        InputMediaPhoto(pie_img),
+        InputMediaPhoto(funnel_img),
+    ]
+
+    target_chat = query.message.chat_id if query and query.message else update.effective_chat.id
+    await context.bot.send_media_group(chat_id=target_chat, media=media)
+
+    if query:
+        await _safe_edit(query, "📊 Альбом отправлен", reply_markup=admin_kb.main_menu())
+    else:
+        await update.message.reply_text("📊 Альбом отправлен", reply_markup=admin_kb.main_menu())
+
+
 async def start_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_admin(update.effective_user.id):
         return ConversationHandler.END
@@ -1075,14 +1428,33 @@ async def order_callback_router(update: Update, context: ContextTypes.DEFAULT_TY
         await show_user_profile(update, context, user_id=cb.id, from_order=from_order)
     elif cb.action in {"give", "take"}:
         await start_balance_change(update, context)
+    elif cb.action == "hard_delete":
+        await db.delete_order_permanently(cb.id)
+        query = update.callback_query
+        if query:
+            await _safe_edit(
+                query,
+                f"💀 Заказ #{cb.id} и чат удалены навсегда.",
+                reply_markup=admin_kb.orders_list(
+                    await db.get_all_orders(status_filter=context.user_data.get("admin_filter")),
+                    page=0,
+                    current_filter=context.user_data.get("admin_filter", "all"),
+                ),
+                parse_mode="HTML",
+            )
 
 
 def setup(app):
     app.add_handler(CommandHandler("admin", entry))
+    app.add_handler(CommandHandler("watch", watch_user_logs))
 
     app.add_handler(CallbackQueryHandler(back_to_main, pattern="^admin_main$"))
 
     app.add_handler(CallbackQueryHandler(show_services, pattern="^admin_prices$"))
+    app.add_handler(CallbackQueryHandler(send_charts, pattern="^admin_charts$"))
+    app.add_handler(CallbackQueryHandler(send_full_report, pattern="^admin_full_report$"))
+    app.add_handler(CallbackQueryHandler(admin_play_voice, pattern=r"^adm_voice_\d+$"))
+    app.add_handler(CallbackQueryHandler(admin_get_files, pattern=r"^adm_files_\d+$"))
     app.add_handler(CallbackQueryHandler(show_service_actions, pattern=r"^edit_svc_\d+$"))
     app.add_handler(CallbackQueryHandler(delete_service, pattern=r"^svc_delete_\d+$"))
     service_conv = ConversationHandler(
@@ -1136,7 +1508,26 @@ def setup(app):
     )
     app.add_handler(balance_conv)
 
-    app.add_handler(CallbackQueryHandler(order_callback_router, pattern=r"^ord:(list|view|status|user|give|take):"))
+    search_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(start_order_search, pattern="^ord:search$")],
+        states={
+            ADMIN_SEARCH_STATE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_order_search),
+                CallbackQueryHandler(handle_order_filter, pattern=r"^ord:filter:(all|active|payment|new)$"),
+            ]
+        },
+        fallbacks=[
+            CallbackQueryHandler(handle_order_filter, pattern=r"^ord:filter:(all|active|payment|new)$"),
+            CallbackQueryHandler(back_to_main, pattern="^admin_main$"),
+        ],
+        per_message=False,
+        allow_reentry=True,
+    )
+    app.add_handler(search_conv)
+
+    app.add_handler(CallbackQueryHandler(handle_order_filter, pattern=r"^ord:filter:(all|active|payment|new)$"))
+    app.add_handler(CallbackQueryHandler(start_order_search, pattern="^ord:search$"))
+    app.add_handler(CallbackQueryHandler(order_callback_router, pattern=r"^ord:(list|view|status|user|give|take|hard_delete):"))
 
     # CRM clients
     app.add_handler(CallbackQueryHandler(show_clients, pattern=r"^usr:list:"))

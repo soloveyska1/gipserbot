@@ -1,4 +1,6 @@
 import asyncio
+import random
+from datetime import datetime
 from typing import Any
 
 from telegram import Update, CallbackQuery
@@ -31,6 +33,20 @@ CODE_OF_HONOR = (
     "4. <b>Анонимность.</b>\n"
     "Никто не узнает, что мы вели дела. Тайна переписки охраняется законом прерий."
 )
+
+TAROT_CARDS = [
+    "🌵 <b>The Hanging Deadline</b> — дедлайн уже качается на веревке. Усилим команду, чтобы снять его вовремя.",
+    "🕯 <b>The Midnight Rider</b> — ночные рейды спасут ситуацию. Подготовим черновики без промедления.",
+    "🏜 <b>The Dry Inbox</b> — тишина перед бурей. Пока никто не шлёт правки, самое время запустить заказ.",
+    "🌪 <b>The Dust Storm</b> — поток задач приближается. Захвати салун раньше остальных, чтобы успеть в срок.",
+    "🤠 <b>The Sheriff’s Favor</b> — удача улыбается. Закрепим успех, пока фортуна на стороне ковбоя.",
+]
+
+DUEL_BEATS = {
+    "colt": "lasso",
+    "lasso": "dynamite",
+    "dynamite": "colt",
+}
 
 
 class _StateWrapper:
@@ -123,6 +139,19 @@ async def _ensure_rules(update: Update, context: Any):
         return False
     return True
 
+
+async def _profile_markup(user_id: int):
+    status = await db.check_bonus_status(user_id)
+    return kb.profile_kb(status)
+
+
+def _format_cooldown_label(seconds: int | float) -> str:
+    if not seconds or seconds < 0:
+        return "0ч 0м"
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    return f"{hours}ч {minutes}м"
+
 async def start(update: Update, context: Any):
     user = update.effective_user
 
@@ -191,6 +220,15 @@ async def accept_rules(update: Update, context: Any):
     )
 
 
+async def _play_slots_animation(query: CallbackQuery, final_text: str, markup):
+    frames = ["🎰 ▫️ ▫️ ▫️", "🎰 🍒 ▫️ ▫️", "🎰 🍒 🍋 ▫️"]
+    for frame in frames:
+        await _safe_edit(query, frame, reply_markup=markup)
+        await asyncio.sleep(0.6)
+
+    await _safe_edit(query, final_text, reply_markup=markup, parse_mode="HTML")
+
+
 async def profile(update: Update, context: Any):
     query = update.callback_query
     await query.answer()
@@ -204,6 +242,8 @@ async def profile(update: Update, context: Any):
 
     total_spent = u.get("total_spent", 0) or 0
     rank_name, _, amount_needed, progress_bar = _rank_progress(total_spent)
+    badges = await utils.compute_achievements(query.from_user.id)
+    badges_line = " ".join(badges) if badges else "—"
 
     txt = (
         f"👤 <b>ЛИЧНОЕ ДЕЛО</b>\n"
@@ -212,9 +252,235 @@ async def profile(update: Update, context: Any):
         f"🏆 <b>Ранг:</b> {rank_name}\n"
         f"📊 <b>Прогресс:</b> {progress_bar}\n"
         f"До следующего звания: {amount_needed} RUB\n\n"
+        f"🎖 <b>Ачивки:</b> {badges_line}\n"
         f"<i>Всего инвестировано в спокойствие: {total_spent} RUB</i>"
     )
-    await _safe_edit(query, txt, reply_markup=kb.profile_kb(), parse_mode="HTML")
+    markup = await _profile_markup(query.from_user.id)
+    await _safe_edit(query, txt, reply_markup=markup, parse_mode="HTML")
+
+
+async def play_daily_bonus(update: Update, context: Any):
+    query = update.callback_query
+    await query.answer()
+
+    allowed = await _ensure_rules(update, context)
+    if not allowed:
+        return ConversationHandler.END
+
+    status = await db.check_bonus_status(query.from_user.id)
+    if not status.get("available"):
+        cooldown = _format_cooldown_label(status.get("cooldown_seconds", 0))
+        await query.answer(f"⏳ Еще {cooldown}", show_alert=True)
+        return
+
+    user = await db.get_user(query.from_user.id)
+    total_spent = user.get("total_spent", 0) or 0
+    current_streak = status.get("next_streak") or 0
+
+    if total_spent > 15000:
+        tier = 2
+        multiplier = 1.5
+    elif total_spent > 0:
+        tier = 1
+        multiplier = 1.2
+    else:
+        tier = 0
+        multiplier = 1.0
+
+    base = random.randint(10, 20)
+    streak_bonus = min(current_streak * 5, 50)
+    prize_points = int((base + streak_bonus) * multiplier)
+
+    jackpot_roll = random.random()
+    super_rare_roll = random.random()
+    display_day = current_streak if current_streak > 0 else 1
+
+    tier_lines = {
+        0: "🔸 Неплохо для начала! На пару патронов хватит.",
+        1: "🍀 Салун подливает постоянным гостям.",
+        2: "🥃 Шериф угощает лучшего клиента!",
+    }
+
+    header = "🎰 <b>ОДНОРУКИЙ БАНДИТ</b>\n\n"
+
+    if tier == 2 and super_rare_roll < 0.0005:
+        reward_text = (
+            f"{header}🍾 <b>СУПЕР-УДАЧА!</b>\n"
+            "Бесплатная речь/презентация к следующему заказу. Напиши шерифу, чтобы зафиксировать подарок.\n\n"
+            f"День серии: {display_day}\n{tier_lines[2]}"
+        )
+        await db.record_bonus_claim(query.from_user.id, current_streak)
+        markup = await _profile_markup(query.from_user.id)
+        return await _play_slots_animation(query, reward_text, markup)
+
+    if jackpot_roll < 0.005:
+        if tier == 0:
+            promo_code = f"SALOON{query.from_user.id}{int(datetime.utcnow().timestamp())}"
+            promo_code = promo_code[-16:]
+            await db.add_promo_code(promo_code, 15, 1)
+            reward_text = (
+                f"{header}🍀 <b>ДЖЕКПОТ!</b>\n"
+                f"Промокод на 15%: <code>{promo_code}</code>\n\n"
+                f"День серии: {display_day}\n{tier_lines[0]}"
+            )
+        else:
+            prize_points = 500
+            await db.adjust_balance(query.from_user.id, prize_points, "daily_bonus_jackpot")
+            reward_text = (
+                f"{header}🍀 <b>ДЖЕКПОТ!</b>\n"
+                f"+{prize_points} баллов падает на баланс!\n\n"
+                f"День серии: {display_day}\n{tier_lines[tier]}"
+            )
+
+        await db.record_bonus_claim(query.from_user.id, current_streak)
+        markup = await _profile_markup(query.from_user.id)
+        return await _play_slots_animation(query, reward_text, markup)
+
+    await db.adjust_balance(query.from_user.id, prize_points, "daily_bonus")
+    await db.record_bonus_claim(query.from_user.id, current_streak)
+    reward_text = (
+        f"{header}День {display_day}: +{prize_points} баллов на баланс.\n\n"
+        f"{tier_lines[tier]}"
+    )
+    markup = await _profile_markup(query.from_user.id)
+    await _play_slots_animation(query, reward_text, markup)
+
+
+def _duel_outcome(user_choice: str, bot_choice: str) -> str:
+    if user_choice == bot_choice:
+        return "draw"
+    return "win" if DUEL_BEATS.get(user_choice) == bot_choice else "lose"
+
+
+async def start_duel(update: Update, context: Any):
+    query = update.callback_query
+    await query.answer()
+
+    allowed = await _ensure_rules(update, context)
+    if not allowed:
+        return ConversationHandler.END
+
+    user = await db.get_user(query.from_user.id)
+    balance = user.get("balance", 0) if user else 0
+    if balance < 100:
+        return await _safe_edit(
+            query,
+            "💸 Для дуэли нужно минимум 100 баллов. Попробуй подкопить или сорвать бонус.",
+            reply_markup=await _profile_markup(query.from_user.id),
+            parse_mode="HTML",
+        )
+
+    await _safe_edit(
+        query,
+        "🤜 <b>Дуэль за 100 баллов!</b>\nВыбирай оружие: колт, динамит или лассо.",
+        reply_markup=kb.duel_kb(),
+        parse_mode="HTML",
+    )
+
+
+async def resolve_duel(update: Update, context: Any):
+    query = update.callback_query
+    await query.answer()
+
+    allowed = await _ensure_rules(update, context)
+    if not allowed:
+        return ConversationHandler.END
+
+    choice_key = query.data.split("_")[-1]
+    if choice_key not in DUEL_BEATS:
+        return ConversationHandler.END
+
+    user = await db.get_user(query.from_user.id)
+    balance = user.get("balance", 0) if user else 0
+    if balance < 100:
+        return await _safe_edit(
+            query,
+            "💸 Нужна ставка 100 баллов. Пополните баланс или сыграйте позже.",
+            reply_markup=await _profile_markup(query.from_user.id),
+            parse_mode="HTML",
+        )
+
+    bot_choice = random.choice(list(DUEL_BEATS.keys()))
+    outcome = _duel_outcome(choice_key, bot_choice)
+
+    for frame in ["🤜 3...", "🤜 2...", "🤜 1...", "🤜 BANG!"]:
+        await _safe_edit(query, frame)
+        await asyncio.sleep(0.45)
+
+    delta = 0
+    flavor = ""
+    if outcome == "win":
+        delta = 100
+        flavor = "🥃 Шериф угощает — победа за тобой!"
+    elif outcome == "lose":
+        delta = -100
+        flavor = "💥 Пуля ушла в молоко. Баллы списаны."
+    else:
+        flavor = "🤝 Ничья. Оба ковбоя остались при своём."
+
+    if delta:
+        await db.adjust_balance(query.from_user.id, delta, "duel_game")
+
+    result_label = {"win": "Победа", "lose": "Поражение", "draw": "Ничья"}[outcome]
+
+    summary = (
+        f"🤜 <b>Дуэль окончена</b>\n"
+        f"Ты выбрал: <b>{choice_key.title()}</b>\n"
+        f"Оппонент: <b>{bot_choice.title()}</b>\n"
+        f"Результат: <b>{result_label}</b>\n"
+        f"Изменение баланса: {delta:+} 💎\n\n"
+        f"{flavor}"
+    )
+
+    await _safe_edit(
+        query,
+        summary,
+        reply_markup=await _profile_markup(query.from_user.id),
+        parse_mode="HTML",
+    )
+
+
+async def draw_deadline_oracle(update: Update, context: Any):
+    query = update.callback_query
+    await query.answer()
+
+    allowed = await _ensure_rules(update, context)
+    if not allowed:
+        return ConversationHandler.END
+
+    card = random.choice(TAROT_CARDS)
+    text = (
+        "🔮 <b>ОРАКУЛ ДЕДЛАЙНОВ</b>\n\n"
+        f"{card}\n\n"
+        "📌 Дерни за курок — оформи заказ и забронируй слот команды."
+    )
+
+    await _safe_edit(query, text, reply_markup=kb.oracle_kb(), parse_mode="HTML")
+
+
+async def open_safe(update: Update, context: Any):
+    query = update.callback_query
+    await query.answer()
+
+    allowed = await _ensure_rules(update, context)
+    if not allowed:
+        return ConversationHandler.END
+
+    files = await db.get_user_files(query.from_user.id)
+    if not files:
+        return await _safe_edit(
+            query,
+            "🗄 Сейф пуст. Здесь будут храниться ваши готовые работы.",
+            reply_markup=kb.back_kb("open_profile"),
+            parse_mode="HTML",
+        )
+
+    await _safe_edit(
+        query,
+        "🗄 ВАШ СЕЙФ\nАрхив всех полученных материалов:",
+        reply_markup=kb.safe_kb(files),
+        parse_mode="HTML",
+    )
 
 
 async def ask_promo_code(update: Update, context: Any):
@@ -253,9 +519,10 @@ async def submit_promo_code(update: Update, context: Any):
         )
         return PROMO_STATE
 
+    markup = await _profile_markup(user.id)
     await update.message.reply_text(
         "💰 Промокод принят! Твой баланс пополнен.",
-        reply_markup=kb.profile_kb(),
+        reply_markup=markup,
         parse_mode="HTML",
     )
     return ConversationHandler.END
@@ -263,12 +530,12 @@ async def submit_promo_code(update: Update, context: Any):
 
 async def _render_price_menu(update: Update, context: Any, via_callback: bool = False):
     services = await catalog_db.get_all_services()
-    
+
     # Текст стал дружелюбнее и чище
     text = (
-        "🏷 <b>ПРЕЙСКУРАНТ</b>\n\n"
-        "Выберите трофей, за которым мы отправимся охотиться.\n"
-        "<i>Нажмите на услугу, чтобы узнать детали и оформить заказ.</i>"
+        "🏷 <b>МЕНЮ УСЛУГ</b>\n\n"
+        "Каждая позиция — готовый набор под ключ.\n"
+        "<i>Жми на нужный вариант, дальше проведём за руку.</i>"
     )
 
     if not services:
@@ -390,7 +657,8 @@ async def my_history(update: Update, context: Any):
         return ConversationHandler.END
     orders = await db.get_user_orders(query.from_user.id)
     if not orders:
-        await _safe_edit(query, "📂 <b>Архив пуст.</b>", reply_markup=kb.profile_kb(), parse_mode="HTML")
+        markup = await _profile_markup(query.from_user.id)
+        await _safe_edit(query, "📂 <b>Архив пуст.</b>", reply_markup=markup, parse_mode="HTML")
     else:
         trimmed = orders[:5]
         history_markup = builders.create_orders_history_keyboard(trimmed)
@@ -425,6 +693,44 @@ async def my_order(update: Update, context: Any):
         f"💬 Комментарий шерифа: {admin_comment}"
     )
     await _safe_edit(query, txt, reply_markup=kb.order_details_kb(oid, o.get('status')), parse_mode="HTML")
+
+
+async def hide_order_confirm(update: Update, context: Any):
+    query = update.callback_query
+    await query.answer()
+
+    oid = int(query.data.split("_")[-1])
+    await db.hide_order_for_user(oid, True)
+
+    await _safe_edit(
+        query,
+        "🗑 Заказ скрыт из истории. Остальные дела ждут тебя в архиве.",
+        reply_markup=await _profile_markup(query.from_user.id),
+        parse_mode="HTML",
+    )
+
+
+async def send_safe_file(update: Update, context: Any):
+    query = update.callback_query
+    allowed = await _ensure_rules(update, context)
+    if not allowed:
+        return ConversationHandler.END
+
+    try:
+        msg_id = int(query.data.split("_")[-1])
+    except ValueError:
+        return await query.answer("Файл не найден в сейфе.", show_alert=True)
+
+    record = await db.get_file_message(msg_id, query.from_user.id)
+    if not record:
+        return await query.answer("Файл не найден в сейфе.", show_alert=True)
+
+    if record.get("msg_type") == "photo":
+        await context.bot.send_photo(chat_id=query.from_user.id, photo=record["file_id"])
+    else:
+        await context.bot.send_document(chat_id=query.from_user.id, document=record["file_id"])
+
+    await query.answer("✅ Файл отправлен!", show_alert=True)
 
 async def my_transactions(update: Update, context: Any):
     query = update.callback_query
