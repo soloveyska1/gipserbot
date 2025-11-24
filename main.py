@@ -97,9 +97,11 @@ def main():
     app.add_handler(MessageHandler(filters.Regex(r"^⚖️ Кодекс Чести \(Гарантии\)$"), client.show_code_of_honor))
     app.add_handler(CallbackQueryHandler(client.partners, pattern="^partners$"))
     app.add_handler(CallbackQueryHandler(client.my_history, pattern="^my_history$"))
+    app.add_handler(CallbackQueryHandler(client.open_safe, pattern="^my_safe$"))
     app.add_handler(CallbackQueryHandler(client.my_transactions, pattern="^my_transactions$"))
     app.add_handler(CallbackQueryHandler(client.my_order, pattern="^my_order_"))
     app.add_handler(CallbackQueryHandler(client.hide_order_confirm, pattern="^hide_order_"))
+    app.add_handler(CallbackQueryHandler(client.send_safe_file, pattern="^get_file_msg_"))
 
     # === ОТЗЫВЫ ===
     review_conv = ConversationHandler(

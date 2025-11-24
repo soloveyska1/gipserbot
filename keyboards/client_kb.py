@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from config import ADMIN_IDS
 
@@ -66,6 +68,7 @@ def profile_kb():
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("📦 Мои заказы", callback_data="my_history")],
+            [InlineKeyboardButton("🗄 Мой Сейф", callback_data="my_safe")],
             [InlineKeyboardButton("📜 История золота", callback_data="my_transactions")],
             [InlineKeyboardButton("🎟 Ввести промокод", callback_data="enter_promo")],
             [InlineKeyboardButton("💰 Партнерка (15%)", callback_data="partners")],
@@ -92,6 +95,32 @@ def order_details_kb(oid, status="review"):
 
     rows.append([InlineKeyboardButton("🔙 Назад", callback_data="my_history")])
 
+    return InlineKeyboardMarkup(rows)
+
+
+def _format_safe_date(date_value):
+    if not date_value:
+        return "—"
+    try:
+        return datetime.fromisoformat(str(date_value)).strftime("%d.%m")
+    except Exception:
+        return str(date_value)[:10]
+
+
+def safe_kb(files):
+    rows = []
+    for f in files:
+        date_label = _format_safe_date(f.get("created_at"))
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    f"📄 {f.get('service_type', 'Услуга')} | {date_label}",
+                    callback_data=f"get_file_msg_{f.get('id')}",
+                )
+            ]
+        )
+
+    rows.append([InlineKeyboardButton("🔙 Назад", callback_data="profile")])
     return InlineKeyboardMarkup(rows)
 
 

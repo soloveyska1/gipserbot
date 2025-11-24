@@ -710,6 +710,63 @@ async def add_chat_message(order_id, sender_id, is_admin, msg_type, content, fil
         conn.close()
 
 
+async def get_user_files(user_id):
+    conn = await get_connection()
+    try:
+        cursor = conn.execute(
+            """
+            SELECT m.id, m.file_id, m.msg_type, m.created_at, o.topic, o.service_type
+            FROM messages m
+            JOIN orders o ON m.order_id = o.id
+            WHERE o.user_id = ?
+              AND m.is_admin = 1
+              AND m.file_id IS NOT NULL
+              AND m.msg_type IN ('document', 'photo')
+            ORDER BY m.created_at DESC
+            """,
+            (user_id,),
+        )
+        files = []
+        for row in cursor.fetchall():
+            files.append(
+                {
+                    "id": row[0],
+                    "file_id": row[1],
+                    "msg_type": row[2],
+                    "created_at": row[3],
+                    "topic": row[4],
+                    "service_type": row[5],
+                }
+            )
+        return files
+    finally:
+        conn.close()
+
+
+async def get_file_message(message_id, user_id):
+    conn = await get_connection()
+    try:
+        cursor = conn.execute(
+            """
+            SELECT m.file_id, m.msg_type
+            FROM messages m
+            JOIN orders o ON m.order_id = o.id
+            WHERE m.id = ?
+              AND o.user_id = ?
+              AND m.is_admin = 1
+              AND m.file_id IS NOT NULL
+              AND m.msg_type IN ('document', 'photo')
+            """,
+            (message_id, user_id),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return {"file_id": row[0], "msg_type": row[1]}
+    finally:
+        conn.close()
+
+
 async def get_chat_history(order_id, limit=None):
     conn = await get_connection()
     try:

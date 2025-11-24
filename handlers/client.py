@@ -217,6 +217,31 @@ async def profile(update: Update, context: Any):
     await _safe_edit(query, txt, reply_markup=kb.profile_kb(), parse_mode="HTML")
 
 
+async def open_safe(update: Update, context: Any):
+    query = update.callback_query
+    await query.answer()
+
+    allowed = await _ensure_rules(update, context)
+    if not allowed:
+        return ConversationHandler.END
+
+    files = await db.get_user_files(query.from_user.id)
+    if not files:
+        return await _safe_edit(
+            query,
+            "🗄 Сейф пуст. Здесь будут храниться ваши готовые работы.",
+            reply_markup=kb.back_kb("open_profile"),
+            parse_mode="HTML",
+        )
+
+    await _safe_edit(
+        query,
+        "🗄 ВАШ СЕЙФ\nАрхив всех полученных материалов:",
+        reply_markup=kb.safe_kb(files),
+        parse_mode="HTML",
+    )
+
+
 async def ask_promo_code(update: Update, context: Any):
     query = update.callback_query
     await query.answer()
@@ -440,6 +465,29 @@ async def hide_order_confirm(update: Update, context: Any):
         reply_markup=kb.profile_kb(),
         parse_mode="HTML",
     )
+
+
+async def send_safe_file(update: Update, context: Any):
+    query = update.callback_query
+    allowed = await _ensure_rules(update, context)
+    if not allowed:
+        return ConversationHandler.END
+
+    try:
+        msg_id = int(query.data.split("_")[-1])
+    except ValueError:
+        return await query.answer("Файл не найден в сейфе.", show_alert=True)
+
+    record = await db.get_file_message(msg_id, query.from_user.id)
+    if not record:
+        return await query.answer("Файл не найден в сейфе.", show_alert=True)
+
+    if record.get("msg_type") == "photo":
+        await context.bot.send_photo(chat_id=query.from_user.id, photo=record["file_id"])
+    else:
+        await context.bot.send_document(chat_id=query.from_user.id, document=record["file_id"])
+
+    await query.answer("✅ Файл отправлен!", show_alert=True)
 
 async def my_transactions(update: Update, context: Any):
     query = update.callback_query
