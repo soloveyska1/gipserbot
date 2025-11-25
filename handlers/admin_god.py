@@ -122,7 +122,9 @@ async def toggle_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- SETTINGS ---
 SET_PRICE_STEP = 1
 async def settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.edit_message_text("⚙️ <b>НАСТРОЙКИ ЦЕН</b>\nВыберите, что изменить:", reply_markup=kb.settings_kb(), parse_mode="HTML")
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("⚙️ <b>НАСТРОЙКИ ЦЕН</b>\nВыберите, что изменить:", reply_markup=kb.settings_kb(), parse_mode="HTML")
 
 async def set_price_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
